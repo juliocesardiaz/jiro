@@ -4,28 +4,40 @@ Six phases from proof-of-concept to launch. Each phase has a clear goal and a se
 of deliverables. The canonical design behind these phases is in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> **Current status:** **Phase 1 — Tap proof-of-concept.** Project scaffolding is
-> committed: XcodeGen `project.yml`, the SwiftUI app skeleton (menu-bar shell,
-> `AppState`, `EngineBridge` stub, `TapManager`/`ProcessTap` structure), the C++
-> engine facade, and these docs. Next up: get a single live per-process tap
-> delivering audio through to an output device.
+> **Current status:** **Phase 1 — Tap proof-of-concept (code complete, pending
+> on-device verification).** The full capture path is implemented:
+> `ProcessTap` performs real Core Audio process tapping (`CATapDescription` →
+> `AudioHardwareCreateProcessTap` → private aggregate device combining the tap and
+> the default output → pass-through `AudioDeviceIOProcID` with peak metering),
+> `TapManager` does defer-until-audible retry, and `EngineBridge` calls the real
+> C++ `sonicpatch::AudioEngine` over Swift C++ interop. **This has not yet been
+> built or run on a Mac** (no Xcode/Core Audio toolchain in CI) — that's the one
+> remaining step to close Phase 1. Build with `xcodegen generate` and verify on
+> Apple Silicon (macOS 14.4+); see [BUILD.md](BUILD.md).
 
 ---
 
-## Phase 1 — Tap proof-of-concept *(in progress)*
+## Phase 1 — Tap proof-of-concept *(code complete, pending on-device verification)*
 
 **Goal:** prove the Core Audio Process Tap API path end-to-end: capture one
 running app's audio and render it to an output device.
 
 **Deliverables:**
-- TCC audio-capture permission flow (`PermissionService`).
+- TCC audio-capture permission flow (`PermissionService`). — *stub; wired in Phase 2*
 - `ProcessTap`: `CATapDescription` → `AudioHardwareCreateProcessTap` → private
   aggregate device (`kAudioAggregateDeviceTapListKey`,
-  `kAudioAggregateDeviceIsPrivateKey`) → `AudioDeviceCreateIOProcIDWithBlock`.
+  `kAudioAggregateDeviceIsPrivateKey`) → `AudioDeviceCreateIOProcIDWithBlock`. — ✅ **implemented**
 - `TapManager`: create/destroy taps by bundle id, retry-on-failure / defer-until-
-  audible logic.
-- Minimal pass-through: tap → engine `TapSource` → `DeviceSink`.
-- Read tap format via `kAudioTapPropertyFormat`.
+  audible logic. — ✅ **implemented** (2s retry poll)
+- Minimal pass-through: tapped input copied straight to the output device inside a
+  single IOProc on one clock. — ✅ **implemented** (routing through the C++
+  `TapSource`/`DeviceSink` nodes lands in Phase 2)
+- Read tap format via `kAudioTapPropertyFormat`. — ✅ **implemented**
+- Live peak meter from the IOProc, surfaced in `MenuBarView`. — ✅ **implemented**
+
+**Remaining to close Phase 1:** generate the Xcode project (`xcodegen generate`),
+build on Apple Silicon (macOS 14.4+), grant the capture permission, and confirm an
+app's audio is heard through SonicPatch with a moving meter.
 
 ## Phase 2 — Per-app volume
 

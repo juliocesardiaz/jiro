@@ -31,8 +31,24 @@ final class TapManager {
     /// Max activation attempts before giving up until the next audible signal.
     private let maxAttempts = 5
 
+    /// Low-frequency timer that re-attempts deferred taps. Taps fail until the
+    /// target app is actually producing audio, so we poll a few times rather than
+    /// only reacting to `AppMonitor`'s (Phase 2) audible-process listener.
+    private var retryTimer: Timer?
+
     init(engine: EngineBridge) {
         self.engine = engine
+        startRetryTimer()
+    }
+
+    deinit { retryTimer?.invalidate() }
+
+    private func startRetryTimer() {
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.retryPendingTaps() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retryTimer = timer
     }
 
     // MARK: Public API
@@ -106,4 +122,10 @@ final class TapManager {
     var activeBundleIds: [String] { Array(taps.keys) }
 
     func isTapped(_ bundleId: String) -> Bool { taps[bundleId] != nil }
+
+    /// Most recent peak (linear) captured by the tap for `bundleId`, or 0 if the
+    /// app isn't tapped. Consumed by the UI metering loop.
+    func takePeak(forBundleId bundleId: String) -> Float {
+        taps[bundleId]?.takePeak() ?? 0
+    }
 }

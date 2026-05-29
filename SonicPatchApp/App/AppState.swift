@@ -164,7 +164,13 @@ final class AppState: ObservableObject {
         var snapshot: [EngineBridge.StripID: LevelReading] = [:]
         for source in sources {
             guard let strip = source.stripID else { continue }
-            snapshot[strip] = engine.getLevel(strip)
+            // Phase 1 routes audio Tap -> output directly, so the live peak comes
+            // from the tap's IOProc. Phase 2 moves processing into the engine, at
+            // which point `engine.getLevel` carries the authoritative meter.
+            let engineLevel = engine.getLevel(strip)
+            let tapPeak = tapManager.takePeak(forBundleId: source.bundleId)
+            snapshot[strip] = LevelReading(peak: max(engineLevel.peak, tapPeak),
+                                           rms: engineLevel.rms)
         }
         levels = snapshot
     }

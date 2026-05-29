@@ -43,86 +43,111 @@ final class EngineBridge {
     /// Sentinel for "no strip", matching `sonicpatch::kInvalidStrip`.
     static let invalidStrip: StripID = 0
 
-    // The owned C++ engine instance. With interop enabled this is:
-    //     private var engine = sonicpatch.AudioEngine()
-    // Held here for the lifetime of the bridge.
+    // The owned C++ engine instance, reached through Swift C++ interop.
     //
-    // #if canImport(SonicPatchEngine)
-    // private var engine = sonicpatch.AudioEngine()
-    // #endif
+    // NOTE: `sonicpatch::AudioEngine` is move-only (deleted copy ctor). If a given
+    // Swift toolchain can't store a move-only C++ type as a stored property, wrap
+    // it behind a small copyable handle (e.g. a `std::shared_ptr<AudioEngine>`
+    // exposed from the framework) — the call sites below stay identical.
+    #if canImport(SonicPatchEngine)
+    private var engine = sonicpatch.AudioEngine()
+    #endif
 
     /// Tracks running state locally so the UI has a value even in the stub build.
     private var running = false
 
     init() {
-        // TODO(Phase 1): construct the C++ engine and call setAudioFormat with
-        // the negotiated tap/device format before start().
+        // The negotiated tap/device format is applied (while stopped) before
+        // start(); see setAudioFormat(). A sensible default is set here.
+        setAudioFormat(sampleRate: 48_000, channels: 2, framesPerBuffer: 512)
     }
 
     // MARK: Lifecycle
 
     func start() {
-        // TODO(Phase 1): engine.start()
+        #if canImport(SonicPatchEngine)
+        engine.start()
+        #endif
         running = true
     }
 
     func stop() {
-        // TODO(Phase 1): engine.stop()
+        #if canImport(SonicPatchEngine)
+        engine.stop()
+        #endif
         running = false
     }
 
     func isRunning() -> Bool {
-        // TODO(Phase 1): return engine.isRunning()
-        running
+        #if canImport(SonicPatchEngine)
+        return engine.isRunning()
+        #else
+        return running
+        #endif
     }
 
     /// Reconfigure the engine's PCM format. Must be called while stopped.
     func setAudioFormat(sampleRate: Double, channels: UInt32, framesPerBuffer: UInt32) {
-        // TODO(Phase 1):
-        //   var fmt = sonicpatch.AudioFormat()
-        //   fmt.sampleRate = sampleRate
-        //   fmt.channels = channels
-        //   fmt.framesPerBuffer = framesPerBuffer
-        //   engine.setAudioFormat(fmt)
+        #if canImport(SonicPatchEngine)
+        var fmt = sonicpatch.AudioFormat()
+        fmt.sampleRate      = sampleRate
+        fmt.channels        = channels
+        fmt.framesPerBuffer = framesPerBuffer
+        engine.setAudioFormat(fmt)
+        #endif
     }
 
     // MARK: Channel strips
 
     /// Create a strip capturing `bundleId`. Returns `invalidStrip` on failure.
     func createChannelStrip(bundleId: String) -> StripID {
-        // TODO(Phase 1):
-        //   return bundleId.withCString { engine.createChannelStrip($0) }
-        Self.invalidStrip
+        #if canImport(SonicPatchEngine)
+        return bundleId.withCString { engine.createChannelStrip($0) }
+        #else
+        return Self.invalidStrip
+        #endif
     }
 
     func removeChannelStrip(_ strip: StripID) {
-        // TODO(Phase 1): engine.removeChannelStrip(strip)
+        #if canImport(SonicPatchEngine)
+        engine.removeChannelStrip(strip)
+        #endif
     }
 
     // MARK: Per-strip controls
 
     func setVolume(_ strip: StripID, db: Float) {
-        // TODO(Phase 2): engine.setVolume(strip, db)
+        #if canImport(SonicPatchEngine)
+        engine.setVolume(strip, db)
+        #endif
     }
 
     func setPan(_ strip: StripID, pan: Float) {
-        // TODO(Phase 2): engine.setPan(strip, max(-1, min(1, pan)))
+        #if canImport(SonicPatchEngine)
+        engine.setPan(strip, max(-1, min(1, pan)))
+        #endif
     }
 
     func setMute(_ strip: StripID, muted: Bool) {
-        // TODO(Phase 2): engine.setMute(strip, muted)
+        #if canImport(SonicPatchEngine)
+        engine.setMute(strip, muted)
+        #endif
     }
 
     func setInputTrim(_ strip: StripID, db: Float) {
-        // TODO(Phase 2): engine.setInputTrim(strip, db)
+        #if canImport(SonicPatchEngine)
+        engine.setInputTrim(strip, db)
+        #endif
     }
 
     /// Lock-free metering read.
     func getLevel(_ strip: StripID) -> LevelReading {
-        // TODO(Phase 2):
-        //   let snap = engine.getLevel(strip)
-        //   return LevelReading(peak: snap.peak, rms: snap.rms)
-        LevelReading()
+        #if canImport(SonicPatchEngine)
+        let snap = engine.getLevel(strip)
+        return LevelReading(peak: snap.peak, rms: snap.rms)
+        #else
+        return LevelReading()
+        #endif
     }
 
     // MARK: Built-in effects
@@ -132,18 +157,23 @@ final class EngineBridge {
     func insertBuiltinEffect(_ strip: StripID,
                              slotIndex: Int,
                              type: BuiltinEffectKind) -> Int {
-        // TODO(Phase 3):
-        //   return Int(engine.insertBuiltinEffect(strip, Int32(slotIndex),
-        //                                          type.cppValue))
-        -1
+        #if canImport(SonicPatchEngine)
+        return Int(engine.insertBuiltinEffect(strip, Int32(slotIndex), type.cppValue))
+        #else
+        return -1
+        #endif
     }
 
     func setEffectParameter(_ strip: StripID, slot: Int, paramId: UInt32, value: Float) {
-        // TODO(Phase 3): engine.setEffectParameter(strip, Int32(slot), paramId, value)
+        #if canImport(SonicPatchEngine)
+        engine.setEffectParameter(strip, Int32(slot), paramId, value)
+        #endif
     }
 
     func removeEffect(_ strip: StripID, slot: Int) {
-        // TODO(Phase 3): engine.removeEffect(strip, Int32(slot))
+        #if canImport(SonicPatchEngine)
+        engine.removeEffect(strip, Int32(slot))
+        #endif
     }
 }
 
@@ -170,17 +200,20 @@ enum BuiltinEffectKind: String, CaseIterable, Identifiable {
         case .gainUtility:        return "Gain Utility"
         }
     }
-
-    // On an Apple build, map to the C++ enum:
-    //
-    // var cppValue: sonicpatch.BuiltinEffectType {
-    //     switch self {
-    //     case .parametricEQ:      return .ParametricEQ
-    //     case .compressor:        return .Compressor
-    //     case .limiter:           return .Limiter
-    //     case .noiseGate:         return .NoiseGate
-    //     case .highLowPassFilter: return .HighLowPassFilter
-    //     case .gainUtility:       return .GainUtility
-    //     }
-    // }
 }
+
+#if canImport(SonicPatchEngine)
+extension BuiltinEffectKind {
+    /// Maps to the C++ `sonicpatch::BuiltinEffectType` across the interop boundary.
+    var cppValue: sonicpatch.BuiltinEffectType {
+        switch self {
+        case .parametricEQ:      return .ParametricEQ
+        case .compressor:        return .Compressor
+        case .limiter:           return .Limiter
+        case .noiseGate:         return .NoiseGate
+        case .highLowPassFilter: return .HighLowPassFilter
+        case .gainUtility:       return .GainUtility
+        }
+    }
+}
+#endif

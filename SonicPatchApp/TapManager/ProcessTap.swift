@@ -2,79 +2,100 @@
 //  ProcessTap.swift
 //  SonicPatch
 //
-//  Wraps a single Core Audio process tap and its private aggregate device.
+//  Phase 1 centerpiece: a *real* Core Audio process tap that captures one
+//  application's audio and passes it through to the default output device, while
+//  computing a peak level for the meters.
 //
-//  Lifecycle (Phase 1 centerpiece):
-//    1. Resolve the target process' AudioObjectID(s).
-//    2. Build a CATapDescription (mono/stereo mixdown of those processes).
+//  Lifecycle:
+//    1. Resolve the target process' AudioObjectID from its bundle id.
+//    2. Build a CATapDescription (stereo mixdown of that process).
 //    3. AudioHardwareCreateProcessTap -> tap object id.
-//    4. Read the tap's stream format via kAudioTapPropertyFormat.
-//    5. Create a *private* aggregate device whose tap list is this tap
-//       (kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceIsPrivateKey).
-//    6. Install an IOProc via AudioDeviceCreateIOProcIDWithBlock and start IO.
-//    7. On teardown, stop/destroy IOProc, aggregate device, and the tap.
+//    4. Read the tap's stream format (kAudioTapPropertyFormat) and UID
+//       (kAudioTapPropertyUID).
+//    5. Create a *private* aggregate device that contains both the tap (as a
+//       sub-tap) and the current default output device (as the main sub-device),
+//       so a single IOProc runs on one clock.
+//    6. Install an IOProc via AudioDeviceCreateIOProcIDWithBlock that copies the
+//       tapped input straight to the output buffers (pass-through) and records
+//       the block peak. Start IO.
+//    7. On teardown, stop/destroy the IOProc, the aggregate device, and the tap.
 //
-//  The Core Audio calls are stubbed here (no Core Audio in this environment) but
-//  the signatures, ordering, and cleanup are accurate. Replace the stub bodies
-//  with the real calls on an Apple build.
+//  Notes:
+//    * The tapped process is muted at the source (`.mutedWhenTapped`) so audio is
+//      heard only via SonicPatch's pass-through, not doubled.
+//    * In Phase 2 the IOProc will deposit captured frames into the C++ engine's
+//      TapSourceNode and fetch the processed mix from a DeviceSinkNode instead of
+//      copying input straight to output. The plumbing (single private aggregate +
+//      one IOProc) stays the same.
 //
 
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
+
 #if canImport(CoreAudio)
 import CoreAudio
 import AudioToolbox
-#endif
 
 /// Errors that can occur while creating or running a tap.
 enum ProcessTapError: Error {
     case processNotFound
-    case tapCreationFailed(OSStatusValue)
-    case aggregateDeviceCreationFailed(OSStatusValue)
-    case ioProcCreationFailed(OSStatusValue)
+    case outputDeviceUnavailable
+    case tapCreationFailed(OSStatus)
+    case aggregateDeviceCreationFailed(OSStatus)
+    case ioProcCreationFailed(OSStatus)
     case formatUnavailable
 }
 
-/// Aliased so this file parses without CoreAudio (where `OSStatus` is undefined).
-#if canImport(CoreAudio)
-typealias OSStatusValue = OSStatus
-#else
-typealias OSStatusValue = Int32
-#endif
-
-/// Owns one process tap and its private aggregate device, delivering captured
-/// audio to the engine for a specific strip.
+/// Owns one process tap, its private aggregate device, and the pass-through
+/// IOProc that drives audio for a specific strip.
 final class ProcessTap {
 
     let bundleId: String
     let stripID: EngineBridge.StripID
 
-    /// Negotiated tap format (channels/rate), read from kAudioTapPropertyFormat.
+    /// Negotiated tap format, read from kAudioTapPropertyFormat.
     private(set) var sampleRate: Double = 0
     private(set) var channelCount: UInt32 = 0
-
-    // Core Audio resource ids. Typed as UInt32 (AudioObjectID) so the file parses
-    // without CoreAudio; real builds use AudioObjectID / AudioDeviceIOProcID.
-    private var tapObjectID: UInt32 = 0
-    private var aggregateDeviceID: UInt32 = 0
-    private var ioProcID: UnsafeMutableRawPointer?   // AudioDeviceIOProcID (opaque)
-
     private(set) var isRunning = false
+
+    // Core Audio resource ids.
+    private var tapObjectID       = AudioObjectID(kAudioObjectUnknown)
+    private var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+    private var ioProcID: AudioDeviceIOProcID?
+
+    /// State shared with the IOProc. Heap-allocated so the real-time block
+    /// captures a plain pointer with no ARC traffic on the audio thread.
+    private struct IOState {
+        var peakLinear: Float = 0
+    }
+    private let state = UnsafeMutablePointer<IOState>.allocate(capacity: 1)
 
     init(bundleId: String, stripID: EngineBridge.StripID) {
         self.bundleId = bundleId
         self.stripID = stripID
+        state.initialize(to: IOState())
     }
 
-    deinit { tearDown() }
+    deinit {
+        tearDown()
+        state.deinitialize(count: 1)
+        state.deallocate()
+    }
 
     // MARK: Activation
 
     /// Build the tap + aggregate device and start IO. Throws on any CA failure.
+    /// Throws `.processNotFound` when the app isn't audible yet; `TapManager`
+    /// catches that and retries when the process becomes audible.
     func activate() throws {
         let processObject = try resolveProcessObject(forBundleId: bundleId)
+        let outputUID = try defaultOutputDeviceUID()
         try createTap(forProcess: processObject)
         try readTapFormat()
-        try createPrivateAggregateDevice()
+        let tapUID = try readTapUID()
+        try createPrivateAggregateDevice(outputUID: outputUID, tapUID: tapUID)
         try installIOProc()
         try startIO()
         isRunning = true
@@ -82,7 +103,8 @@ final class ProcessTap {
 
     /// Stop IO and release all Core Audio resources. Idempotent.
     func tearDown() {
-        guard tapObjectID != 0 || aggregateDeviceID != 0 else { return }
+        guard tapObjectID != AudioObjectID(kAudioObjectUnknown)
+                || aggregateDeviceID != AudioObjectID(kAudioObjectUnknown) else { return }
         stopIO()
         destroyIOProc()
         destroyAggregateDevice()
@@ -90,101 +112,275 @@ final class ProcessTap {
         isRunning = false
     }
 
-    // MARK: Steps (stubbed Core Audio)
+    /// Read and reset the most recent peak (linear 0...1). Called from the UI's
+    /// metering loop on the main thread.
+    func takePeak() -> Float {
+        let peak = state.pointee.peakLinear
+        state.pointee.peakLinear = 0
+        return peak
+    }
 
-    /// Resolve the AudioObjectID of the audio process for `bundleId`.
-    private func resolveProcessObject(forBundleId bundleId: String) throws -> UInt32 {
-        // TODO(Phase 1): enumerate kAudioHardwarePropertyProcessObjectList and
-        // match kAudioProcessPropertyBundleID == bundleId. Throw .processNotFound
-        // if absent (the caller defers and retries when the app becomes audible).
+    // MARK: Steps
+
+    /// Resolve the Core Audio process object for `bundleId`.
+    private func resolveProcessObject(forBundleId bundleId: String) throws -> AudioObjectID {
+        #if canImport(AppKit)
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleId).first else {
+            throw ProcessTapError.processNotFound
+        }
+        var inputPID = app.processIdentifier
+        #else
         throw ProcessTapError.processNotFound
+        #endif
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+
+        var processObject = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+
+        let status = withUnsafeMutablePointer(to: &inputPID) { pidPtr -> OSStatus in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                UInt32(MemoryLayout<pid_t>.size),
+                pidPtr,
+                &size,
+                &processObject)
+        }
+        // A process with no current audio object isn't tappable yet — defer.
+        guard status == noErr,
+              processObject != AudioObjectID(kAudioObjectUnknown) else {
+            throw ProcessTapError.processNotFound
+        }
+        return processObject
+    }
+
+    /// UID of the current default output device, used as the aggregate's main
+    /// sub-device so pass-through audio reaches the user's speakers/headphones.
+    private func defaultOutputDeviceUID() throws -> CFString {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        guard status == noErr, deviceID != AudioObjectID(kAudioObjectUnknown) else {
+            throw ProcessTapError.outputDeviceUnavailable
+        }
+
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var uid = "" as CFString
+        var uidSize = UInt32(MemoryLayout<CFString>.size)
+        status = withUnsafeMutablePointer(to: &uid) {
+            AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, $0)
+        }
+        guard status == noErr else { throw ProcessTapError.outputDeviceUnavailable }
+        return uid
     }
 
     /// Create the process tap from a CATapDescription.
-    private func createTap(forProcess processObject: UInt32) throws {
-        // TODO(Phase 1):
-        //   let desc = CATapDescription(stereoMixdownOfProcesses: [processObject])
-        //   // or CATapDescription(processes:) for a multi-channel tap.
-        //   desc.isPrivate = true
-        //   var tap = AudioObjectID(0)
-        //   let status = AudioHardwareCreateProcessTap(desc, &tap)
-        //   guard status == noErr else { throw .tapCreationFailed(status) }
-        //   self.tapObjectID = tap
-        throw ProcessTapError.tapCreationFailed(-1)
+    private func createTap(forProcess processObject: AudioObjectID) throws {
+        let description = CATapDescription(stereoMixdownOfProcesses: [processObject])
+        description.name = "SonicPatch Tap (\(bundleId))"
+        description.isPrivate = true
+        // Mute the app at the source so we don't double the audio with our
+        // pass-through copy.
+        description.muteBehavior = .mutedWhenTapped
+
+        var tap = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateProcessTap(description, &tap)
+        guard status == noErr, tap != AudioObjectID(kAudioObjectUnknown) else {
+            throw ProcessTapError.tapCreationFailed(status)
+        }
+        tapObjectID = tap
     }
 
-    /// Read the tap's stream format (kAudioTapPropertyFormat) to learn
-    /// rate/channel count before building the aggregate device.
+    /// Read the tap's stream format (rate / channel count).
     private func readTapFormat() throws {
-        // TODO(Phase 1):
-        //   var addr = AudioObjectPropertyAddress(
-        //       mSelector: kAudioTapPropertyFormat,
-        //       mScope: kAudioObjectPropertyScopeGlobal,
-        //       mElement: kAudioObjectPropertyElementMain)
-        //   var asbd = AudioStreamBasicDescription()
-        //   var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        //   let status = AudioObjectGetPropertyData(tapObjectID, &addr, 0, nil,
-        //                                           &size, &asbd)
-        //   guard status == noErr else { throw .formatUnavailable }
-        //   self.sampleRate = asbd.mSampleRate
-        //   self.channelCount = asbd.mChannelsPerFrame
-        throw ProcessTapError.formatUnavailable
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyFormat,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let status = AudioObjectGetPropertyData(tapObjectID, &address, 0, nil, &size, &asbd)
+        guard status == noErr else { throw ProcessTapError.formatUnavailable }
+        sampleRate   = asbd.mSampleRate
+        channelCount = asbd.mChannelsPerFrame
     }
 
-    /// Create a *private* aggregate device whose tap list is our tap.
-    private func createPrivateAggregateDevice() throws {
-        // TODO(Phase 1): build the aggregate description dictionary with:
-        //   kAudioAggregateDeviceUIDKey            = "SonicPatch.tap.<bundleId>"
-        //   kAudioAggregateDeviceIsPrivateKey      = true   (not user-visible)
-        //   kAudioAggregateDeviceIsStackedKey      = false
-        //   kAudioAggregateDeviceTapListKey        = [ { tap UID } ]
-        //   kAudioAggregateDeviceTapAutoStartKey   = true
-        // then:
-        //   var device = AudioObjectID(0)
-        //   let status = AudioHardwareCreateAggregateDevice(dict as CFDictionary,
-        //                                                   &device)
-        //   guard status == noErr else { throw .aggregateDeviceCreationFailed(status) }
-        //   self.aggregateDeviceID = device
-        throw ProcessTapError.aggregateDeviceCreationFailed(-1)
+    /// Read the tap's UID so it can be referenced from the aggregate's tap list.
+    private func readTapUID() throws -> CFString {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioTapPropertyUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var uid = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &uid) {
+            AudioObjectGetPropertyData(tapObjectID, &address, 0, nil, &size, $0)
+        }
+        guard status == noErr else { throw ProcessTapError.formatUnavailable }
+        return uid
     }
 
-    /// Install the IOProc that delivers captured frames to the engine.
+    /// Create a *private* aggregate device combining the tap and the output
+    /// device, so one IOProc captures and renders on a single clock.
+    private func createPrivateAggregateDevice(outputUID: CFString, tapUID: CFString) throws {
+        let aggregateUID = "SonicPatch.aggregate.\(bundleId).\(UUID().uuidString)"
+        let description: [String: Any] = [
+            kAudioAggregateDeviceNameKey:          "SonicPatch (\(bundleId))",
+            kAudioAggregateDeviceUIDKey:           aggregateUID,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+            kAudioAggregateDeviceIsPrivateKey:     true,   // not user-visible
+            kAudioAggregateDeviceIsStackedKey:     false,
+            kAudioAggregateDeviceTapAutoStartKey:  true,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [ kAudioSubDeviceUIDKey: outputUID ],
+            ],
+            kAudioAggregateDeviceTapListKey: [
+                [ kAudioSubTapUIDKey: tapUID ],
+            ],
+        ]
+        var device = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &device)
+        guard status == noErr, device != AudioObjectID(kAudioObjectUnknown) else {
+            throw ProcessTapError.aggregateDeviceCreationFailed(status)
+        }
+        aggregateDeviceID = device
+    }
+
+    /// Install the pass-through IOProc on the aggregate device.
     private func installIOProc() throws {
-        // TODO(Phase 1):
-        //   var procID: AudioDeviceIOProcID?
-        //   let status = AudioDeviceCreateIOProcIDWithBlock(
-        //       &procID, aggregateDeviceID, /*dispatchQueue:*/ nil) {
-        //       _, inInputData, _, _, _ in
-        //       // RT-SAFE: copy/forward inInputData buffers into the engine's
-        //       // TapSource for self.stripID. No allocation, no locks here.
-        //   }
-        //   guard status == noErr, let procID else { throw .ioProcCreationFailed(status) }
-        //   self.ioProcID = UnsafeMutableRawPointer(procID)
-        throw ProcessTapError.ioProcCreationFailed(-1)
+        let statePtr = state   // captured as a plain pointer (no ARC on the RT thread)
+
+        var proc: AudioDeviceIOProcID?
+        let status = AudioDeviceCreateIOProcIDWithBlock(
+            &proc,
+            aggregateDeviceID,
+            nil
+        ) { (_, inInputData, _, outOutputData, _) in
+            // [RT] No allocation, no locks, no ARC. Copy tapped input to output
+            // and record the block peak.
+            let input  = UnsafeMutableAudioBufferListPointer(
+                UnsafeMutablePointer(mutating: inInputData))
+            let output = UnsafeMutableAudioBufferListPointer(outOutputData)
+
+            var blockPeak: Float = 0
+            let pairs = min(input.count, output.count)
+
+            var i = 0
+            while i < pairs {
+                let inBuf  = input[i]
+                let outBuf = output[i]
+                let bytes  = min(inBuf.mDataByteSize, outBuf.mDataByteSize)
+                if let src = inBuf.mData, let dst = outBuf.mData {
+                    memcpy(dst, src, Int(bytes))
+                    let count = Int(bytes) / MemoryLayout<Float>.size
+                    let samples = src.assumingMemoryBound(to: Float.self)
+                    var s = 0
+                    while s < count {
+                        let v = abs(samples[s])
+                        if v > blockPeak { blockPeak = v }
+                        s += 1
+                    }
+                }
+                i += 1
+            }
+
+            // Silence any output buffers with no matching input.
+            var j = pairs
+            while j < output.count {
+                if let dst = output[j].mData {
+                    memset(dst, 0, Int(output[j].mDataByteSize))
+                }
+                j += 1
+            }
+
+            // Publish the running peak. A naturally-aligned 32-bit float write is
+            // effectively atomic on arm64; this is a benign meter race that the
+            // engine's real lock-free LevelSnapshot atomics replace in Phase 2.
+            if blockPeak > statePtr.pointee.peakLinear {
+                statePtr.pointee.peakLinear = blockPeak
+            }
+        }
+
+        guard status == noErr, let proc else {
+            throw ProcessTapError.ioProcCreationFailed(status)
+        }
+        ioProcID = proc
     }
 
     private func startIO() throws {
-        // TODO(Phase 1): AudioDeviceStart(aggregateDeviceID, ioProcID)
+        let status = AudioDeviceStart(aggregateDeviceID, ioProcID)
+        guard status == noErr else { throw ProcessTapError.ioProcCreationFailed(status) }
     }
 
     // MARK: Teardown steps
 
     private func stopIO() {
-        // TODO(Phase 1): AudioDeviceStop(aggregateDeviceID, ioProcID)
+        if ioProcID != nil { AudioDeviceStop(aggregateDeviceID, ioProcID) }
     }
 
     private func destroyIOProc() {
-        // TODO(Phase 1): AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-        ioProcID = nil
+        if let proc = ioProcID {
+            AudioDeviceDestroyIOProcID(aggregateDeviceID, proc)
+            ioProcID = nil
+        }
     }
 
     private func destroyAggregateDevice() {
-        // TODO(Phase 1): AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-        aggregateDeviceID = 0
+        if aggregateDeviceID != AudioObjectID(kAudioObjectUnknown) {
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+        }
     }
 
     private func destroyTap() {
-        // TODO(Phase 1): AudioHardwareDestroyProcessTap(tapObjectID)
-        tapObjectID = 0
+        if tapObjectID != AudioObjectID(kAudioObjectUnknown) {
+            AudioHardwareDestroyProcessTap(tapObjectID)
+            tapObjectID = AudioObjectID(kAudioObjectUnknown)
+        }
     }
 }
+
+#else // !canImport(CoreAudio)
+
+// Portable fallback so the app sources parse on non-Apple toolchains (e.g. Linux
+// CI). All Core Audio behaviour is unavailable here.
+enum ProcessTapError: Error {
+    case processNotFound
+    case outputDeviceUnavailable
+    case tapCreationFailed(Int32)
+    case aggregateDeviceCreationFailed(Int32)
+    case ioProcCreationFailed(Int32)
+    case formatUnavailable
+}
+
+final class ProcessTap {
+    let bundleId: String
+    let stripID: EngineBridge.StripID
+    private(set) var sampleRate: Double = 0
+    private(set) var channelCount: UInt32 = 0
+    private(set) var isRunning = false
+
+    init(bundleId: String, stripID: EngineBridge.StripID) {
+        self.bundleId = bundleId
+        self.stripID = stripID
+    }
+
+    func activate() throws { throw ProcessTapError.processNotFound }
+    func tearDown() {}
+    func takePeak() -> Float { 0 }
+}
+
+#endif
