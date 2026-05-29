@@ -1,0 +1,123 @@
+# SonicPatch — XcodeGen project specification.
+#
+# This file is the SOURCE OF TRUTH for the Xcode project. The .xcodeproj is NOT
+# checked in; generate it with:
+#
+#     brew install xcodegen
+#     xcodegen generate     # produces SonicPatch.xcodeproj
+#     open SonicPatch.xcodeproj
+#
+# See Docs/BUILD.md for the full build guide.
+
+name: SonicPatch
+
+options:
+  bundleIdPrefix: com.sonicpatch
+  deploymentTarget:
+    macOS: "14.4"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    # Apple Silicon only.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: true
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.4"
+    CODE_SIGN_STYLE: Automatic
+    # Zero-entitlements design for the core capture path; the only signed,
+    # privileged piece is the optional installer helper (Phase 5).
+    ENABLE_HARDENED_RUNTIME: true
+
+targets:
+  # ---------------------------------------------------------------------------
+  # SwiftUI menu-bar app
+  # ---------------------------------------------------------------------------
+  SonicPatch:
+    type: application
+    platform: macOS
+    sources:
+      - SonicPatchApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.app
+        PRODUCT_NAME: SonicPatch
+        INFOPLIST_FILE: SonicPatchApp/Info.plist
+        # Menu-bar agent: no Dock icon, no main menu.
+        LSUIElement: true
+        # Enable C++ / Objective-C++ interop so Swift can call into the
+        # sonicpatch::AudioEngine C++ facade directly (Swift 5.9+).
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+    dependencies:
+      - target: SonicPatchEngine
+
+  # ---------------------------------------------------------------------------
+  # C++17 real-time mixing/effects engine (framework)
+  # NOTE: sources owned by another contributor; spec'd here for the dependency.
+  # ---------------------------------------------------------------------------
+  SonicPatchEngine:
+    type: framework
+    platform: macOS
+    sources:
+      - SonicPatchEngine
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.engine
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+        DEFINES_MODULE: true
+        # Public headers (the AudioEngine facade) live here.
+        PUBLIC_HEADERS_FOLDER_PATH: "Headers"
+    settingGroups: []
+    # Mark SonicPatchEngine/Public headers as public via XcodeGen header scope.
+    headerScopes:
+      public:
+        - SonicPatchEngine/Public
+
+  # ---------------------------------------------------------------------------
+  # HAL virtual-device driver (.driver bundle), libASPL-based (Phase 5)
+  # NOTE: sources owned by another contributor.
+  # ---------------------------------------------------------------------------
+  SonicPatchDriver:
+    type: bundle
+    platform: macOS
+    sources:
+      - SonicPatchDriver
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.driver
+        WRAPPER_EXTENSION: driver
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+
+  # ---------------------------------------------------------------------------
+  # Swift unit tests (XCTest).
+  # NOTE: The C++ engine has its own GoogleTest suite driven by CMake
+  # (SonicPatchTests/CMakeLists.txt) — see Docs/BUILD.md. XCTest here covers the
+  # Swift app layer.
+  # ---------------------------------------------------------------------------
+  SonicPatchTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - SonicPatchTests
+    dependencies:
+      - target: SonicPatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.tests
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+
+schemes:
+  SonicPatch:
+    build:
+      targets:
+        SonicPatch: all
+    run:
+      config: Debug
+    test:
+      targets:
+        - SonicPatchTests
