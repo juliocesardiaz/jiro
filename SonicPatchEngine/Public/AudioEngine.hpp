@@ -31,15 +31,22 @@ namespace sonicpatch {
 ///  * Mutating methods (create/remove/setX, insert/removeEffect) are called from
 ///    the main/UI thread and are serialized internally; they publish a new
 ///    immutable graph config to the audio thread via an atomic swap.
-///  * getLevel() is a lock-free read of atomics and is safe to poll from the UI.
+///  * getLevel() briefly takes the control lock to resolve the strip, then
+///    reads the meter atomics; it is safe to poll from the UI.
+///
+/// Handle semantics: AudioEngine is a *copyable shared handle* — the internal
+/// state lives behind a shared Impl, and copies refer to the same engine. This
+/// is deliberate for Swift C++ interop: Swift 5.9 cannot import move-only C++
+/// types, so the facade must be copyable to be usable as a Swift stored
+/// property. Copying never duplicates the audio graph.
 class AudioEngine {
 public:
     AudioEngine();
     ~AudioEngine();
 
-    // Non-copyable. Movable so it can be stored in containers / returned.
-    AudioEngine(const AudioEngine&)            = delete;
-    AudioEngine& operator=(const AudioEngine&) = delete;
+    // Copyable shared handle (see above); copies alias the same engine.
+    AudioEngine(const AudioEngine&)            = default;
+    AudioEngine& operator=(const AudioEngine&) = default;
     AudioEngine(AudioEngine&&) noexcept;
     AudioEngine& operator=(AudioEngine&&) noexcept;
 
@@ -64,7 +71,8 @@ public:
     void setMute(StripID strip, bool muted);
     void setInputTrim(StripID strip, float db);
 
-    /// Lock-free metering read. Returns {0,0} for unknown strips.
+    /// Metering read: briefly locks to resolve the strip, then reads the meter
+    /// atomics. Returns {0,0} for unknown strips.
     LevelSnapshot getLevel(StripID strip) const;
 
     // --- Effects -----------------------------------------------------------
@@ -87,7 +95,7 @@ public:
 
 private:
     struct Impl;                  ///< Opaque; defined in AudioEngine.cpp.
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;  ///< Shared so the facade is copyable (Swift).
 };
 
 } // namespace sonicpatch

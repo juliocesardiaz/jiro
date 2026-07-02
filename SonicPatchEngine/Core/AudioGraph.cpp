@@ -4,6 +4,8 @@
 #include "AudioGraph.hpp"
 #include "../Nodes/Node.hpp"
 
+#include <algorithm>
+
 namespace sonicpatch {
 
 AudioGraph::AudioGraph() = default;
@@ -27,14 +29,26 @@ void AudioGraph::publish(std::unique_ptr<GraphConfig> next) {
     GraphConfig* old = current_.exchange(raw, std::memory_order_acq_rel);
 
     // The old config may still be in use by the audio thread *right now* (it may
-    // have acquire-loaded the pointer just before our exchange). We therefore do
-    // NOT free it here; we park it for deferred retirement.
+    // have acquire-loaded the pointer just before our exchange). Park it stamped
+    // with the current render epoch; retireOldConfigs() frees it only once the
+    // audio thread has started >= 2 callbacks after this point.
     if (old) {
-        retired_.emplace_back(old);
+        RetiredConfig rc;
+        rc.config.reset(old);
+        rc.epochAtRetire = renderEpoch_.load(std::memory_order_acquire);
+        retired_.push_back(std::move(rc));
     }
 }
 
 void AudioGraph::process(const AudioFormat& fmt, uint32_t frames) noexcept {
+    // [RT] Advance the render epoch FIRST, then load the config. The ordering
+    // matters for reclamation: a control thread that observes epoch >= E+2 knows
+    // the callback that ran at epoch <= E (and might have held an old config)
+    // has completed — callbacks are sequential on the single audio thread, and
+    // the intervening callback re-loaded `current_` after the publisher swapped
+    // it. fetch_add on a uint64 is lock-free on arm64/x86_64.
+    renderEpoch_.fetch_add(1, std::memory_order_acq_rel);
+
     // [RT] acquire-load: pairs with the release-store in publish(). After this
     // load, every field the control thread wrote into the config is visible.
     GraphConfig* cfg = current_.load(std::memory_order_acquire);
@@ -64,20 +78,30 @@ void AudioGraph::process(const AudioFormat& fmt, uint32_t frames) noexcept {
 }
 
 void AudioGraph::retireOldConfigs() {
-    // In a single-publisher / single-consumer RCU scheme, by the time we are
-    // called again the audio thread has already acquire-loaded a config newer
-    // than everything in `retired_` except possibly the most-recently-retired
-    // one. To stay strictly safe we keep the most recent retired config parked
-    // for one extra cycle and free the rest.
+    // Epoch-based reclamation. A retired config was superseded before its
+    // `epochAtRetire` stamp was taken, so the audio thread could have been at
+    // most *inside the callback running at that epoch* while still holding it.
+    // Once the epoch has advanced by >= 2, at least one full callback boundary
+    // has passed: the potentially-holding callback finished, and every later
+    // callback acquire-loaded a pointer published after the swap. Freeing the
+    // config (and, via GraphConfig::ownedNodes, any nodes only it kept alive)
+    // is then provably safe.
     //
-    // Production hardening (Phase 2): replace this with an epoch/grace-period
-    // counter incremented by the audio thread each block so we can prove the
-    // audio thread is no longer touching a given pointer before freeing it.
-    if (retired_.size() <= 1) {
-        return; // keep at least the newest retired config as a grace buffer
-    }
-    // Free everything except the last (newest) retired config.
-    retired_.erase(retired_.begin(), retired_.end() - 1);
+    // If the audio thread is not running the epoch never advances and configs
+    // are held here indefinitely; the engine calls drain() in that case.
+    const uint64_t epochNow = renderEpoch_.load(std::memory_order_acquire);
+    auto stillInGrace = [epochNow](const RetiredConfig& rc) {
+        return epochNow < rc.epochAtRetire + 2;
+    };
+    retired_.erase(
+        std::remove_if(retired_.begin(), retired_.end(),
+                       [&](const RetiredConfig& rc) { return !stillInGrace(rc); }),
+        retired_.end());
+}
+
+void AudioGraph::drain() {
+    // Caller guarantees no audio thread is inside process().
+    retired_.clear();
 }
 
 uint64_t AudioGraph::liveGeneration() const noexcept {

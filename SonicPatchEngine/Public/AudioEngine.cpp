@@ -46,17 +46,22 @@ namespace sonicpatch {
 
 namespace {
 
+// Node ownership: strips hold shared_ptrs, and every published GraphConfig
+// also holds shared_ptrs to the nodes it binds (GraphConfig::ownedNodes).
+// Removing a strip therefore never destroys a node the audio thread might
+// still reach — the node dies only when the last config referencing it is
+// reclaimed by the graph's epoch protocol.
 struct EffectSlot {
-    int                        handle = -1;
-    std::unique_ptr<EffectNode> node;
+    int                         handle = -1;
+    std::shared_ptr<EffectNode> node;
 };
 
 struct Strip {
     StripID                          id = kInvalidStrip;
-    std::unique_ptr<TapSourceNode>   source;
+    std::shared_ptr<TapSourceNode>   source;
     std::vector<EffectSlot>          effects;
-    std::unique_ptr<VolumeNode>      volume;
-    std::unique_ptr<MeterNode>       meter;
+    std::shared_ptr<VolumeNode>      volume;
+    std::shared_ptr<MeterNode>       meter;
     float                            inputTrimDb = 0.0f;
     int                              nextEffectHandle = 0;
 };
@@ -77,15 +82,15 @@ struct AudioEngine::Impl {
     std::map<StripID, std::unique_ptr<Strip>> strips_;
     StripID                             nextStrip_ = 1;  ///< 0 is reserved/invalid
 
-    std::unique_ptr<MixerNode>          master_;         ///< sums all strips
-    std::unique_ptr<DeviceSinkNode>     sink_;           ///< final output
+    std::shared_ptr<MixerNode>          master_;         ///< sums all strips
+    std::shared_ptr<DeviceSinkNode>     sink_;           ///< final output
     NodeID                              nextNodeId_ = 1;
 
     Impl() {
         // Master mixer is sized to a generous max strip count; we rebuild bindings
         // each publish. 64 input lanes is plenty for a channel-strip mixer UI.
-        master_ = std::make_unique<MixerNode>(nextNodeId_++, 64);
-        sink_   = std::make_unique<DeviceSinkNode>(nextNodeId_++);
+        master_ = std::make_shared<MixerNode>(nextNodeId_++, 64);
+        sink_   = std::make_shared<DeviceSinkNode>(nextNodeId_++);
     }
 
     // Rebuild and publish a fresh immutable GraphConfig from the current strips.
@@ -129,23 +134,26 @@ struct AudioEngine::Impl {
         auto cfg = std::make_unique<GraphConfig>();
         cfg->format = format_;
 
-        // Map node id -> Node* for binding lookup.
-        std::map<NodeID, Node*> byId;
+        // Map node id -> shared_ptr for binding lookup. The config takes shared
+        // ownership of every node it binds so that strip/effect removal on the
+        // control thread can never free a node out from under the audio thread.
+        std::map<NodeID, std::shared_ptr<Node>> byId;
         for (auto& kv : strips_) {
             Strip* s = kv.second.get();
-            if (s->source) byId[s->source->id()] = s->source.get();
-            for (auto& slot : s->effects) if (slot.node) byId[slot.node->id()] = slot.node.get();
-            if (s->volume) byId[s->volume->id()] = s->volume.get();
-            if (s->meter)  byId[s->meter->id()]  = s->meter.get();
+            if (s->source) byId[s->source->id()] = s->source;
+            for (auto& slot : s->effects) if (slot.node) byId[slot.node->id()] = slot.node;
+            if (s->volume) byId[s->volume->id()] = s->volume;
+            if (s->meter)  byId[s->meter->id()]  = s->meter;
         }
-        byId[master_->id()] = master_.get();
-        byId[sink_->id()]   = sink_.get();
+        byId[master_->id()] = master_;
+        byId[sink_->id()]   = sink_;
 
         for (NodeID nid : topo.order) {
             auto it = byId.find(nid);
             if (it == byId.end()) continue;
             NodeBinding b;
-            b.node = it->second;
+            b.node = it->second.get();
+            cfg->ownedNodes.push_back(it->second);
             // TODO(Phase 2): acquire pooled buffers from pool_ and populate
             // b.inputs / b.outputs so each edge has dedicated storage. This
             // requires knowing the live channel count from the Tap/device, which
@@ -155,19 +163,32 @@ struct AudioEngine::Impl {
         }
 
         graph_.publish(std::move(cfg));
-        graph_.retireOldConfigs();
+
+        // Reclaim retired configs: with a live audio thread only epoch-expired
+        // configs are freed; with no audio thread running nothing can be inside
+        // process(), so draining everything is safe.
+        if (running_.load()) {
+            graph_.retireOldConfigs();
+        } else {
+            graph_.drain();
+        }
     }
 
     void prepareAll() {
+        // prepareIfNeeded, not prepare: nodes already prepared for the current
+        // format are skipped. prepare() reallocates internal state, which must
+        // never happen to a node the audio thread may be executing (nodes bound
+        // in the currently-published config). Format changes are only allowed
+        // while stopped, so live nodes are never re-prepared here.
         for (auto& kv : strips_) {
             Strip* s = kv.second.get();
-            if (s->source) s->source->prepare(format_);
-            for (auto& slot : s->effects) if (slot.node) slot.node->prepare(format_);
-            if (s->volume) s->volume->prepare(format_);
-            if (s->meter)  s->meter->prepare(format_);
+            if (s->source) s->source->prepareIfNeeded(format_);
+            for (auto& slot : s->effects) if (slot.node) slot.node->prepareIfNeeded(format_);
+            if (s->volume) s->volume->prepareIfNeeded(format_);
+            if (s->meter)  s->meter->prepareIfNeeded(format_);
         }
-        master_->prepare(format_);
-        sink_->prepare(format_);
+        master_->prepareIfNeeded(format_);
+        sink_->prepareIfNeeded(format_);
     }
 
     Strip* find(StripID id) {
@@ -180,7 +201,7 @@ struct AudioEngine::Impl {
 // Facade
 // ============================================================================
 
-AudioEngine::AudioEngine() : impl_(std::make_unique<Impl>()) {}
+AudioEngine::AudioEngine() : impl_(std::make_shared<Impl>()) {}
 AudioEngine::~AudioEngine() = default;
 
 AudioEngine::AudioEngine(AudioEngine&&) noexcept            = default;
@@ -200,6 +221,9 @@ void AudioEngine::stop() {
     if (!impl_->running_.load()) return;
     // TODO(Phase 1): stop + dispose the IOProcs before tearing anything down.
     impl_->running_.store(false);
+    // With the IOProcs stopped no audio thread can be inside process(); reclaim
+    // every retired config (and any nodes only they kept alive) immediately.
+    impl_->graph_.drain();
 }
 
 bool AudioEngine::isRunning() const {
@@ -221,9 +245,9 @@ StripID AudioEngine::createChannelStrip(const char* bundleId) {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     auto strip   = std::make_unique<Strip>();
     strip->id    = impl_->nextStrip_++;
-    strip->source = std::make_unique<TapSourceNode>(impl_->nextNodeId_++, bundleId);
-    strip->volume = std::make_unique<VolumeNode>(impl_->nextNodeId_++);
-    strip->meter  = std::make_unique<MeterNode>(impl_->nextNodeId_++);
+    strip->source = std::make_shared<TapSourceNode>(impl_->nextNodeId_++, bundleId);
+    strip->volume = std::make_shared<VolumeNode>(impl_->nextNodeId_++);
+    strip->meter  = std::make_shared<MeterNode>(impl_->nextNodeId_++);
     const StripID id = strip->id;
     impl_->strips_.emplace(id, std::move(strip));
     if (impl_->running_.load()) impl_->rebuildGraph();
@@ -282,8 +306,8 @@ int AudioEngine::insertBuiltinEffect(StripID strip, int slotIndex, BuiltinEffect
 
     EffectSlot slot;
     slot.handle = s->nextEffectHandle++;
-    slot.node   = std::make_unique<EffectNode>(impl_->nextNodeId_++, std::move(eff));
-    slot.node->prepare(impl_->format_);
+    slot.node   = std::make_shared<EffectNode>(impl_->nextNodeId_++, std::move(eff));
+    slot.node->prepareIfNeeded(impl_->format_);
 
     const int idx = std::clamp(slotIndex, 0, static_cast<int>(s->effects.size()));
     const int handle = slot.handle;

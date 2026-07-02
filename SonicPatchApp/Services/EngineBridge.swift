@@ -45,10 +45,10 @@ final class EngineBridge {
 
     // The owned C++ engine instance, reached through Swift C++ interop.
     //
-    // NOTE: `sonicpatch::AudioEngine` is move-only (deleted copy ctor). If a given
-    // Swift toolchain can't store a move-only C++ type as a stored property, wrap
-    // it behind a small copyable handle (e.g. a `std::shared_ptr<AudioEngine>`
-    // exposed from the framework) — the call sites below stay identical.
+    // `sonicpatch::AudioEngine` is a *copyable shared handle* (its state lives
+    // behind a shared Impl), specifically so Swift 5.9 — which cannot import
+    // move-only C++ types — can store it as a stored property. Copies alias
+    // the same engine.
     #if canImport(SonicPatchEngine)
     private var engine = sonicpatch.AudioEngine()
     #endif

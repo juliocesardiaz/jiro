@@ -20,6 +20,7 @@
 #include "AudioBuffer.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace sonicpatch {
@@ -30,7 +31,8 @@ class Node;
 /// AudioBuffer views point into BufferPool-owned storage; the config does not
 /// own the sample memory.
 struct NodeBinding {
-    Node*                    node = nullptr;  ///< Not owned (owned by AudioGraph).
+    Node*                    node = nullptr;  ///< Raw for the RT hot path; kept
+                                              ///< alive by GraphConfig::ownedNodes.
     std::vector<AudioBuffer> inputs;          ///< Input buffer views (may be empty).
     std::vector<AudioBuffer> outputs;         ///< Output buffer views.
 };
@@ -40,6 +42,15 @@ struct NodeBinding {
 struct GraphConfig {
     AudioFormat               format;  ///< Rate/geometry this config was built for.
     std::vector<NodeBinding>  order;   ///< Nodes in topological execution order.
+
+    /// Shared ownership of every node referenced by `order`. This is the
+    /// lifetime guarantee for the audio thread: a node cannot be destroyed
+    /// while any config (live or retired-but-not-yet-reclaimed) references it,
+    /// no matter what the control thread does to the strips that created it.
+    /// Destruction happens when the last owning config is reclaimed, which the
+    /// AudioGraph's epoch protocol defers until the audio thread has provably
+    /// moved on.
+    std::vector<std::shared_ptr<Node>> ownedNodes;
 
     /// Monotonic generation counter — purely for diagnostics / retirement
     /// bookkeeping. Not read on the audio thread for control flow.

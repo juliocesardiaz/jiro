@@ -35,8 +35,8 @@ private:
     // Audio-thread-only ballistics state.
     float peakHold_      = 0.0f;
     float rmsAccum_      = 0.0f;
-    float peakDecay_     = 0.0f; ///< per-block multiplicative decay
-    float rmsCoeff_      = 0.0f; ///< one-pole smoothing for mean-square
+    float peakDecay_     = 0.0f; ///< PER-SAMPLE decay; raised to block length in process()
+    float rmsCoeff_      = 0.0f; ///< per-frame one-pole smoothing for mean-square
 };
 
 } // namespace sonicpatch

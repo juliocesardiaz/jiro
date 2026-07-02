@@ -43,6 +43,24 @@ public:
     /// format changes, before the node is published into a live config.
     virtual void prepare(const AudioFormat& fmt) = 0;
 
+    /// Non-RT: prepare only if this node has never been prepared, or was
+    /// prepared for a different format. This is what the engine calls during
+    /// graph rebuilds: nodes already live in a published config must NOT be
+    /// re-prepared (prepare() reallocates state the audio thread may be
+    /// executing against). Format changes only happen while stopped, so a
+    /// running graph never re-prepares a live node through this path.
+    void prepareIfNeeded(const AudioFormat& fmt) {
+        if (prepared_
+            && preparedFormat_.sampleRate == fmt.sampleRate
+            && preparedFormat_.channels == fmt.channels
+            && preparedFormat_.framesPerBuffer == fmt.framesPerBuffer) {
+            return;
+        }
+        prepare(fmt);
+        preparedFormat_ = fmt;
+        prepared_       = true;
+    }
+
     /// Non-RT: clear any internal state (e.g. filter histories, ramps) without
     /// reallocating. Safe to call before re-starting the engine.
     virtual void reset() {}
@@ -54,6 +72,11 @@ public:
 protected:
     NodeKind kind_;
     NodeID   id_;
+
+private:
+    // prepareIfNeeded bookkeeping (control thread only).
+    AudioFormat preparedFormat_{};
+    bool        prepared_ = false;
 };
 
 } // namespace sonicpatch
