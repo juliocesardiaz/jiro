@@ -30,9 +30,6 @@
 //
 
 import Foundation
-#if canImport(AppKit)
-import AppKit
-#endif
 
 #if canImport(CoreAudio)
 import CoreAudio
@@ -90,9 +87,9 @@ final class ProcessTap {
     /// Throws `.processNotFound` when the app isn't audible yet; `TapManager`
     /// catches that and retries when the process becomes audible.
     func activate() throws {
-        let processObject = try resolveProcessObject(forBundleId: bundleId)
+        let processObjects = try resolveProcessObjects(forBundleId: bundleId)
         let outputUID = try defaultOutputDeviceUID()
-        try createTap(forProcess: processObject)
+        try createTap(forProcesses: processObjects)
         try readTapFormat()
         let tapUID = try readTapUID()
         try createPrivateAggregateDevice(outputUID: outputUID, tapUID: tapUID)
@@ -122,41 +119,52 @@ final class ProcessTap {
 
     // MARK: Steps
 
-    /// Resolve the Core Audio process object for `bundleId`.
-    private func resolveProcessObject(forBundleId bundleId: String) throws -> AudioObjectID {
-        #if canImport(AppKit)
-        guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: bundleId).first else {
-            throw ProcessTapError.processNotFound
-        }
-        var inputPID = app.processIdentifier
-        #else
-        throw ProcessTapError.processNotFound
-        #endif
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+    /// Resolve ALL Core Audio process objects whose bundle id matches.
+    ///
+    /// Enumerating the process-object list (rather than translating the app's
+    /// main PID) matters for multi-process apps: browsers and Electron apps
+    /// render audio in helper processes with their own bundle ids and PIDs.
+    /// The bundle id we receive comes from AppMonitor's Core Audio scan, so it
+    /// already names the audio-rendering process; matching every object with
+    /// that bundle id also covers apps that spawn several rendering helpers.
+    private func resolveProcessObjects(forBundleId bundleId: String) throws -> [AudioObjectID] {
+        var listAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
 
-        var processObject = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-
-        let status = withUnsafeMutablePointer(to: &inputPID) { pidPtr -> OSStatus in
-            AudioObjectGetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                UInt32(MemoryLayout<pid_t>.size),
-                pidPtr,
-                &size,
-                &processObject)
-        }
-        // A process with no current audio object isn't tappable yet — defer.
-        guard status == noErr,
-              processObject != AudioObjectID(kAudioObjectUnknown) else {
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &size) == noErr,
+            size > 0 else {
             throw ProcessTapError.processNotFound
         }
-        return processObject
+        var objects = [AudioObjectID](
+            repeating: AudioObjectID(kAudioObjectUnknown),
+            count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil,
+            &size, &objects) == noErr else {
+            throw ProcessTapError.processNotFound
+        }
+
+        var bundleAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyBundleID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+
+        let matches = objects.filter { object in
+            var value = "" as CFString
+            var valueSize = UInt32(MemoryLayout<CFString>.size)
+            let status = withUnsafeMutablePointer(to: &value) {
+                AudioObjectGetPropertyData(object, &bundleAddress, 0, nil, &valueSize, $0)
+            }
+            return status == noErr && (value as String) == bundleId
+        }
+
+        // No matching audio process yet — the app isn't audible; defer & retry.
+        guard !matches.isEmpty else { throw ProcessTapError.processNotFound }
+        return matches
     }
 
     /// UID of the current default output device, used as the aggregate's main
@@ -187,9 +195,10 @@ final class ProcessTap {
         return uid
     }
 
-    /// Create the process tap from a CATapDescription.
-    private func createTap(forProcess processObject: AudioObjectID) throws {
-        let description = CATapDescription(stereoMixdownOfProcesses: [processObject])
+    /// Create the process tap from a CATapDescription covering every matching
+    /// process object (multi-process apps render in several helpers).
+    private func createTap(forProcesses processObjects: [AudioObjectID]) throws {
+        let description = CATapDescription(stereoMixdownOfProcesses: processObjects)
         description.name = "SonicPatch Tap (\(bundleId))"
         description.isPrivate = true
         // Mute the app at the source so we don't double the audio with our
@@ -285,6 +294,11 @@ final class ProcessTap {
                 let bytes  = min(inBuf.mDataByteSize, outBuf.mDataByteSize)
                 if let src = inBuf.mData, let dst = outBuf.mData {
                     memcpy(dst, src, Int(bytes))
+                    // Zero any output tail the input didn't cover, so a short
+                    // input block never leaves stale samples (noise burst).
+                    if outBuf.mDataByteSize > bytes {
+                        memset(dst + Int(bytes), 0, Int(outBuf.mDataByteSize - bytes))
+                    }
                     let count = Int(bytes) / MemoryLayout<Float>.size
                     let samples = src.assumingMemoryBound(to: Float.self)
                     var s = 0

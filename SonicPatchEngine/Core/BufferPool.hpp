@@ -44,9 +44,10 @@ public:
     bool reserve(uint32_t countPerSize);
 
     /// Acquire a free buffer that can hold at least `frames`. Rounds up to the
-    /// nearest size class. Returns nullptr if none free. NOT for the audio
-    /// thread (touches the free list). Index returned via `outIndex` for
-    /// later release.
+    /// nearest size class. Returns nullptr if none free OR if `frames` exceeds
+    /// kMaxFrames (a request the pool cannot satisfy is an error, never a
+    /// silently smaller buffer). NOT for the audio thread (touches the free
+    /// list). Index returned via `outIndex` for later release.
     PooledBuffer* acquire(uint32_t frames, size_t& outIndex);
 
     /// Return a previously-acquired buffer to the pool. NOT for the audio

@@ -86,11 +86,31 @@ struct AudioEngine::Impl {
     std::shared_ptr<DeviceSinkNode>     sink_;           ///< final output
     NodeID                              nextNodeId_ = 1;
 
+    // Immutable strip->meter snapshot for getLevel(). Rebuilt (under mutex_)
+    // whenever strips change, swapped in with atomic_store, and read with
+    // atomic_load — so 60 fps UI meter polling never touches mutex_ and never
+    // contends with control ops like rebuildGraph()/setAudioFormat().
+    using MeterMap = std::map<StripID, std::shared_ptr<MeterNode>>;
+    std::shared_ptr<const MeterMap>     meterMap_ = std::make_shared<MeterMap>();
+
     Impl() {
         // Master mixer is sized to a generous max strip count; we rebuild bindings
         // each publish. 64 input lanes is plenty for a channel-strip mixer UI.
         master_ = std::make_shared<MixerNode>(nextNodeId_++, 64);
         sink_   = std::make_shared<DeviceSinkNode>(nextNodeId_++);
+    }
+
+    // Rebuild + atomically publish the strip->meter snapshot. Control thread
+    // only; holds mutex_ already.
+    void publishMeterMap() {
+        auto next = std::make_shared<MeterMap>();
+        for (auto& kv : strips_) {
+            if (kv.second->meter) (*next)[kv.first] = kv.second->meter;
+        }
+        std::atomic_store_explicit(
+            &meterMap_,
+            std::shared_ptr<const MeterMap>(std::move(next)),
+            std::memory_order_release);
     }
 
     // Rebuild and publish a fresh immutable GraphConfig from the current strips.
@@ -250,6 +270,7 @@ StripID AudioEngine::createChannelStrip(const char* bundleId) {
     strip->meter  = std::make_shared<MeterNode>(impl_->nextNodeId_++);
     const StripID id = strip->id;
     impl_->strips_.emplace(id, std::move(strip));
+    impl_->publishMeterMap();
     if (impl_->running_.load()) impl_->rebuildGraph();
     return id;
 }
@@ -257,6 +278,7 @@ StripID AudioEngine::createChannelStrip(const char* bundleId) {
 void AudioEngine::removeChannelStrip(StripID strip) {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     impl_->strips_.erase(strip);
+    impl_->publishMeterMap();
     if (impl_->running_.load()) impl_->rebuildGraph();
 }
 
@@ -285,15 +307,14 @@ void AudioEngine::setInputTrim(StripID strip, float db) {
 }
 
 LevelSnapshot AudioEngine::getLevel(StripID strip) const {
-    // Lock-free read of the meter atomics. We avoid taking mutex_ on the read
-    // path; the meter node pointer is stable for the strip's lifetime, and the
-    // atomics inside it are written by the audio thread. The map lookup itself
-    // is not strictly lock-free, so we take the lock briefly only to resolve the
-    // node, then read its atomics.
-    std::lock_guard<std::mutex> lock(impl_->mutex_);
-    auto it = impl_->strips_.find(strip);
-    if (it == impl_->strips_.end() || !it->second->meter) return {};
-    return it->second->meter->snapshot();
+    // Lock-free: resolve the meter through the atomically-published immutable
+    // snapshot map, then read the meter's atomics. Never touches mutex_, so
+    // 60 fps polling can't stall behind (or delay) control operations.
+    const auto map = std::atomic_load_explicit(&impl_->meterMap_,
+                                               std::memory_order_acquire);
+    auto it = map->find(strip);
+    if (it == map->end() || !it->second) return {};
+    return it->second->snapshot();
 }
 
 int AudioEngine::insertBuiltinEffect(StripID strip, int slotIndex, BuiltinEffectType type) {

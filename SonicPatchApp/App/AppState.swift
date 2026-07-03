@@ -89,29 +89,48 @@ final class AppState: ObservableObject {
     /// creating/removing taps and engine strips as apps come and go.
     private func reconcileSources(with apps: [AudioApp]) {
         var updated: [AudioSource] = []
+        var seenBundleIds = Set<String>()
         for app in apps {
+            // Dedupe by bundle id: two entries with the same id would produce
+            // duplicate SwiftUI ForEach identities (undefined behavior).
+            guard !seenBundleIds.contains(app.bundleId) else { continue }
+            seenBundleIds.insert(app.bundleId)
+
             if var existing = sources.first(where: { $0.bundleId == app.bundleId }) {
                 existing.displayName = app.displayName
                 updated.append(existing)
             } else {
-                // New audible app: spin up a tap and an engine strip.
+                // New audible app: spin up a tap and an engine strip. A failed
+                // strip (invalidStrip) gets no tap and no stripID, so controls
+                // and meters for it are visibly inert instead of silently
+                // targeting strip 0.
                 let strip = engine.createChannelStrip(bundleId: app.bundleId)
-                tapManager.startTap(forBundleId: app.bundleId, stripID: strip)
                 var source = AudioSource(bundleId: app.bundleId,
                                          displayName: app.displayName)
-                source.stripID = strip
+                if strip != EngineBridge.invalidStrip {
+                    source.stripID = strip
+                    tapManager.startTap(forBundleId: app.bundleId, stripID: strip)
+                }
                 source.icon = app.icon
                 updated.append(source)
             }
         }
         // Remove sources for apps that are no longer audible.
-        let liveBundleIds = Set(apps.map(\.bundleId))
-        for gone in sources where !liveBundleIds.contains(gone.bundleId) {
+        for gone in sources where !seenBundleIds.contains(gone.bundleId) {
             tapManager.stopTap(forBundleId: gone.bundleId)
             if let strip = gone.stripID { engine.removeChannelStrip(strip) }
         }
         sources = updated
-        if selectedSourceID == nil { selectedSourceID = sources.first?.id }
+
+        // The audible set changed — this is exactly the signal deferred taps
+        // wait on (a tap fails until its process actually produces audio).
+        tapManager.retryPendingTaps()
+
+        // Heal the selection if it's nil OR points at a removed source.
+        if selectedSourceID == nil
+            || !sources.contains(where: { $0.id == selectedSourceID }) {
+            selectedSourceID = sources.first?.id
+        }
     }
 
     // MARK: Control intents (called from views)

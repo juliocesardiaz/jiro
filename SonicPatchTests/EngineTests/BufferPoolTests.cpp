@@ -62,3 +62,19 @@ TEST(BufferPoolTests, ExhaustingSizeClassReturnsNull) {
     EXPECT_NE(pool.acquire(64, b), nullptr);
     EXPECT_EQ(pool.acquire(64, c), nullptr); // exhausted this class
 }
+
+TEST(BufferPoolTests, OversizedRequestFailsInsteadOfUndersizedBuffer) {
+    // Regression: a request beyond kMaxFrames used to be silently clamped to a
+    // 4096-frame buffer — a heap overflow for any caller trusting the contract
+    // "at least `frames`". It must fail loudly instead.
+    BufferPool pool;
+    ASSERT_TRUE(pool.reserve(1));
+
+    size_t idx = 0;
+    EXPECT_EQ(pool.acquire(BufferPool::kMaxFrames * 2, idx), nullptr);
+
+    // The largest legal request still succeeds.
+    PooledBuffer* max = pool.acquire(BufferPool::kMaxFrames, idx);
+    ASSERT_NE(max, nullptr);
+    EXPECT_GE(max->capacity, BufferPool::kMaxFrames);
+}

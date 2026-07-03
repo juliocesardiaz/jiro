@@ -64,6 +64,13 @@ bool BufferPool::reserve(uint32_t countPerSize) {
 }
 
 PooledBuffer* BufferPool::acquire(uint32_t frames, size_t& outIndex) {
+    // A request larger than the biggest size class MUST fail loudly: silently
+    // handing back a smaller buffer (as sizeClassFor's clamp would) turns into
+    // a heap overflow the first time a caller memcpy's `frames` into it.
+    if (frames > kMaxFrames) {
+        outIndex = static_cast<size_t>(-1);
+        return nullptr;
+    }
     const uint32_t cls = sizeClassFor(frames);
     for (size_t i = 0; i < slots_.size(); ++i) {
         Slot& s = slots_[i];

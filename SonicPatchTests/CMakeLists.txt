@@ -76,6 +76,7 @@ add_executable(sonicpatch_tests
     EngineTests/BufferPoolTests.cpp
     EngineTests/TopologicalSortTests.cpp
     EngineTests/AudioGraphTests.cpp
+    EngineTests/AudioEngineTests.cpp
     EngineTests/MeterNodeTests.cpp
     EngineTests/MixerNodeTests.cpp
     DSPTests/BiquadTests.cpp

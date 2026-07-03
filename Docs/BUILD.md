@@ -57,8 +57,8 @@ imports cleanly into Swift; the interop seam is isolated to
 
 ## 4. Running the C++ engine unit tests (CMake + GoogleTest)
 
-The C++ engine has its own test suite driven by **CMake/GoogleTest**, separate
-from the Swift XCTest target. From the test directory:
+The C++ engine's test suite is driven by **CMake/GoogleTest** and builds on any
+platform (Linux included) — it covers the portable engine subset only:
 
 ```sh
 cmake -S SonicPatchTests -B build/engine-tests -DCMAKE_BUILD_TYPE=Debug
@@ -66,9 +66,10 @@ cmake --build build/engine-tests
 ctest --test-dir build/engine-tests --output-on-failure
 ```
 
-(See `SonicPatchTests/CMakeLists.txt`, owned by the engine/test contributors.)
-The Swift app layer is tested via the `SonicPatchTests` XCTest target inside
-Xcode (`Cmd-U`).
+(See `SonicPatchTests/CMakeLists.txt`.) There is currently no Xcode test
+target: the GoogleTest sources cannot build as an XCTest bundle, and no Swift
+unit tests exist yet. A Swift XCTest target will be added to `project.yml`
+alongside the first Swift tests.
 
 ## 5. libASPL (Phase 5 only)
 

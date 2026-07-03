@@ -31,8 +31,9 @@ namespace sonicpatch {
 ///  * Mutating methods (create/remove/setX, insert/removeEffect) are called from
 ///    the main/UI thread and are serialized internally; they publish a new
 ///    immutable graph config to the audio thread via an atomic swap.
-///  * getLevel() briefly takes the control lock to resolve the strip, then
-///    reads the meter atomics; it is safe to poll from the UI.
+///  * getLevel() is lock-free: it resolves the strip through an atomically-
+///    published snapshot map and reads meter atomics. Safe to poll at 60 fps
+///    without contending with control operations.
 ///
 /// Handle semantics: AudioEngine is a *copyable shared handle* — the internal
 /// state lives behind a shared Impl, and copies refer to the same engine. This
@@ -71,8 +72,7 @@ public:
     void setMute(StripID strip, bool muted);
     void setInputTrim(StripID strip, float db);
 
-    /// Metering read: briefly locks to resolve the strip, then reads the meter
-    /// atomics. Returns {0,0} for unknown strips.
+    /// Lock-free metering read. Returns {0,0} for unknown strips.
     LevelSnapshot getLevel(StripID strip) const;
 
     // --- Effects -----------------------------------------------------------
