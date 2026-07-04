@@ -2,19 +2,15 @@
 // Limiter.cpp
 //
 #include "Limiter.hpp"
+#include "DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace sonicpatch {
 
-namespace {
-inline float dbToLin(float db) { return std::pow(10.0f, db * 0.05f); }
-inline float timeCoeff(float ms, double sr) {
-    if (ms <= 0.0f) return 0.0f;
-    return static_cast<float>(std::exp(-1.0 / ((ms * 0.001) * sr)));
-}
-} // namespace
+using dsp::dbToLinear;
+using dsp::onePoleCoeffMs;
 
 void Limiter::prepare(const AudioFormat& fmt) {
     sampleRate_ = fmt.sampleRate;
@@ -29,7 +25,7 @@ void Limiter::reset() {
 }
 
 void Limiter::recompute() {
-    releaseCoeff_ = timeCoeff(releaseMs_, sampleRate_);
+    releaseCoeff_ = onePoleCoeffMs(releaseMs_, sampleRate_);
 }
 
 void Limiter::setParameter(uint32_t id, float value) {
@@ -45,7 +41,7 @@ void Limiter::process(float** io, int channels, int frames) {
     // [RT] Working (zero-latency) peak limiter. Instant attack, smoothed release.
     // TODO(Phase 3): feed samples through the look-ahead delay and derive the
     // gain from the *future* peak so the ceiling is never exceeded transiently.
-    const float ceilingLin = dbToLin(ceilingDb_);
+    const float ceilingLin = dbToLinear(ceilingDb_);
 
     for (int n = 0; n < frames; ++n) {
         float peak = 0.0f;

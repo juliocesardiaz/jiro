@@ -146,7 +146,7 @@ final class AppMonitor: ObservableObject {
         var apps: [AudioApp] = []
         var seenBundleIds = Set<String>()
 
-        for processObject in Self.copyProcessObjectList() {
+        for processObject in CoreAudioProperties.processObjectList() {
             // Per-process listener (idempotent per object id).
             if let block = listenerBlock,
                !processListenerObjects.contains(processObject) {
@@ -156,15 +156,15 @@ final class AppMonitor: ObservableObject {
                 processListenerObjects.insert(processObject)
             }
 
-            guard Self.processIsRunningOutput(processObject),
-                  let bundleId = Self.processBundleId(processObject),
+            guard CoreAudioProperties.processIsRunningOutput(processObject),
+                  let bundleId = CoreAudioProperties.processBundleID(processObject),
                   !bundleId.isEmpty,
                   bundleId != Bundle.main.bundleIdentifier, // never tap ourselves
                   !seenBundleIds.contains(bundleId)
             else { continue }
             seenBundleIds.insert(bundleId)
 
-            let pid = Self.processPID(processObject) ?? -1
+            let pid = CoreAudioProperties.processPID(processObject) ?? -1
             let running = NSRunningApplication(processIdentifier: pid)
             apps.append(AudioApp(
                 bundleId: bundleId,
@@ -174,58 +174,6 @@ final class AppMonitor: ObservableObject {
         }
 
         if apps != audibleApps { audibleApps = apps }
-    }
-
-    // MARK: Core Audio property helpers
-
-    private static func copyProcessObjectList() -> [AudioObjectID] {
-        var addr = processListAddress
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr,
-            size > 0 else { return [] }
-        var list = [AudioObjectID](
-            repeating: AudioObjectID(kAudioObjectUnknown),
-            count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &list) == noErr
-        else { return [] }
-        return list
-    }
-
-    private static func processIsRunningOutput(_ object: AudioObjectID) -> Bool {
-        var addr = isRunningOutputAddress
-        var value: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &value) == noErr
-        else { return false }
-        return value != 0
-    }
-
-    private static func processBundleId(_ object: AudioObjectID) -> String? {
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyBundleID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var value = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        let status = withUnsafeMutablePointer(to: &value) {
-            AudioObjectGetPropertyData(object, &addr, 0, nil, &size, $0)
-        }
-        guard status == noErr else { return nil }
-        return value as String
-    }
-
-    private static func processPID(_ object: AudioObjectID) -> pid_t? {
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyPID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var value: pid_t = -1
-        var size = UInt32(MemoryLayout<pid_t>.size)
-        guard AudioObjectGetPropertyData(object, &addr, 0, nil, &size, &value) == noErr
-        else { return nil }
-        return value
     }
 
 #else // !canImport(CoreAudio) — portable stubs so the file parses off-Apple.

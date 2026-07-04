@@ -2,25 +2,21 @@
 // VolumeNode.cpp
 //
 #include "VolumeNode.hpp"
+#include "../DSP/DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace sonicpatch {
 
-namespace {
-constexpr float kPi = 3.14159265358979323846f;
-} // namespace
-
 float VolumeNode::dbToLinear(float db) noexcept {
-    return std::pow(10.0f, db * 0.05f);
+    return dsp::dbToLinear(db);
 }
 
 void VolumeNode::prepare(const AudioFormat& fmt) {
     sampleRate_ = fmt.sampleRate;
     // ~5 ms smoothing time constant: coeff = exp(-1 / (tau * fs)).
-    const double tau = 0.005;
-    smoothCoeff_ = static_cast<float>(std::exp(-1.0 / (tau * sampleRate_)));
+    smoothCoeff_ = dsp::onePoleCoeff(0.005, sampleRate_);
     reset();
 }
 
@@ -62,10 +58,11 @@ void VolumeNode::process(ProcessContext& ctx) {
             smoothedGain_ = c * smoothedGain_ + (1.0f - c) * targetGain;
             smoothedPan_  = c * smoothedPan_  + (1.0f - c) * targetPan;
 
-            // Constant-power pan law: theta in [0, pi/2].
-            const float theta = (smoothedPan_ * 0.5f + 0.5f) * (kPi * 0.5f);
-            const float lGain = std::cos(theta) * smoothedGain_;
-            const float rGain = std::sin(theta) * smoothedGain_;
+            // Constant-power pan law (shared: DSP/DspMath.hpp).
+            float panL = 1.0f, panR = 1.0f;
+            dsp::constantPowerPanGains(smoothedPan_, panL, panR);
+            const float lGain = panL * smoothedGain_;
+            const float rGain = panR * smoothedGain_;
 
             out.channel(0)[n] = in.channel(0)[n] * lGain;
             out.channel(1)[n] = in.channel(1)[n] * rGain;

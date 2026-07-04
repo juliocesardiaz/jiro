@@ -2,21 +2,15 @@
 // NoiseGate.cpp
 //
 #include "NoiseGate.hpp"
+#include "DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace sonicpatch {
 
-namespace {
-inline float linToDb(float lin) {
-    return lin > 1e-6f ? 20.0f * std::log10(lin) : -120.0f;
-}
-inline float timeCoeff(float ms, double sr) {
-    if (ms <= 0.0f) return 0.0f;
-    return static_cast<float>(std::exp(-1.0 / ((ms * 0.001) * sr)));
-}
-} // namespace
+using dsp::linearToDb;
+using dsp::onePoleCoeffMs;
 
 void NoiseGate::prepare(const AudioFormat& fmt) {
     sampleRate_ = fmt.sampleRate;
@@ -30,8 +24,8 @@ void NoiseGate::reset() {
 }
 
 void NoiseGate::recompute() {
-    attackCoeff_  = timeCoeff(attackMs_,  sampleRate_);
-    releaseCoeff_ = timeCoeff(releaseMs_, sampleRate_);
+    attackCoeff_  = onePoleCoeffMs(attackMs_,  sampleRate_);
+    releaseCoeff_ = onePoleCoeffMs(releaseMs_, sampleRate_);
     holdSamples_  = static_cast<int>((holdMs_ * 0.001) * sampleRate_);
 }
 
@@ -55,7 +49,7 @@ void NoiseGate::process(float** io, int channels, int frames) {
         for (int c = 0; c < channels; ++c) {
             peak = std::max(peak, std::fabs(io[c][n]));
         }
-        const bool open = linToDb(peak) > thresholdDb_;
+        const bool open = linearToDb(peak) > thresholdDb_;
 
         float target;
         if (open) {

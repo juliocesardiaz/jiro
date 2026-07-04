@@ -6,6 +6,7 @@
 // with callbacks shorter than the 64-sample ramp).
 //
 #include "Nodes/MixerNode.hpp"
+#include "TestSupport.hpp"
 
 #include <gtest/gtest.h>
 
@@ -33,13 +34,7 @@ std::vector<float> renderGainTrajectory(MixerNode& mixer,
         AudioBuffer in(inChans, 1, blockFrames);
         AudioBuffer out(outChans, 1, blockFrames);
 
-        ProcessContext ctx;
-        ctx.inputs     = &in;
-        ctx.numInputs  = 1;
-        ctx.outputs    = &out;
-        ctx.numOutputs = 1;
-        ctx.frames     = blockFrames;
-        ctx.sampleRate = 48000.0;
+        ProcessContext ctx = test::makeContext(&in, &out, blockFrames);
         mixer.process(ctx);
 
         trajectory.insert(trajectory.end(), outBuf.begin(), outBuf.end());
@@ -115,13 +110,8 @@ TEST(MixerNodeTests, SumsMultipleInputs) {
                              AudioBuffer(bChan, 1, frames)};
     AudioBuffer out(outChan, 1, frames);
 
-    ProcessContext ctx;
-    ctx.inputs     = inputs;
-    ctx.numInputs  = 2;
-    ctx.outputs    = &out;
-    ctx.numOutputs = 1;
-    ctx.frames     = frames;
-    ctx.sampleRate = 48000.0;
+    ProcessContext ctx = test::makeContext(inputs, &out, frames);
+    ctx.numInputs = 2; // two-input sum: builder covers the 1-in/1-out shape
     mixer.process(ctx);
 
     for (float s : outBuf) EXPECT_FLOAT_EQ(s, 0.75f);

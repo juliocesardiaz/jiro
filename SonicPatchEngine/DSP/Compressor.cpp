@@ -2,26 +2,16 @@
 // Compressor.cpp
 //
 #include "Compressor.hpp"
+#include "DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace sonicpatch {
 
-namespace {
-inline float linToDb(float lin) {
-    // -120 dBFS floor to avoid log(0).
-    return lin > 1e-6f ? 20.0f * std::log10(lin) : -120.0f;
-}
-inline float dbToLin(float db) {
-    return std::pow(10.0f, db * 0.05f);
-}
-// One-pole time-constant coefficient for a given time in ms.
-inline float timeCoeff(float ms, double sr) {
-    if (ms <= 0.0f) return 0.0f;
-    return static_cast<float>(std::exp(-1.0 / ((ms * 0.001) * sr)));
-}
-} // namespace
+using dsp::dbToLinear;
+using dsp::linearToDb;
+using dsp::onePoleCoeffMs;
 
 void Compressor::prepare(const AudioFormat& fmt) {
     sampleRate_ = fmt.sampleRate;
@@ -34,8 +24,8 @@ void Compressor::reset() {
 }
 
 void Compressor::recomputeCoeffs() {
-    attackCoeff_  = timeCoeff(attackMs_,  sampleRate_);
-    releaseCoeff_ = timeCoeff(releaseMs_, sampleRate_);
+    attackCoeff_  = onePoleCoeffMs(attackMs_,  sampleRate_);
+    releaseCoeff_ = onePoleCoeffMs(releaseMs_, sampleRate_);
 }
 
 void Compressor::setParameter(uint32_t id, float value) {
@@ -52,7 +42,7 @@ void Compressor::setParameter(uint32_t id, float value) {
 
 void Compressor::process(float** io, int channels, int frames) {
     // [RT] feed-forward, sample-accurate gain smoothing.
-    const float makeupLin = dbToLin(makeupDb_);
+    const float makeupLin = dbToLinear(makeupDb_);
     const float invRatio  = 1.0f / ratio_;
 
     for (int n = 0; n < frames; ++n) {
@@ -61,7 +51,7 @@ void Compressor::process(float** io, int channels, int frames) {
         for (int c = 0; c < channels; ++c) {
             peak = std::max(peak, std::fabs(io[c][n]));
         }
-        const float inDb = linToDb(peak);
+        const float inDb = linearToDb(peak);
 
         // 2. Static gain computer (hard knee for now).
         // TODO(Phase 3): soft knee using kneeDb_ for a smooth transition region.
@@ -79,7 +69,7 @@ void Compressor::process(float** io, int channels, int frames) {
         gainReductionDb_ = coeff * gainReductionDb_ + (1.0f - coeff) * targetReductionDb;
 
         // 4. Apply makeup + smoothed gain reduction to all channels.
-        const float gain = dbToLin(gainReductionDb_) * makeupLin;
+        const float gain = dbToLinear(gainReductionDb_) * makeupLin;
         for (int c = 0; c < channels; ++c) {
             io[c][n] *= gain;
         }

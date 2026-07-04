@@ -15,11 +15,8 @@
 
 #include <cstdint>
 
-#if defined(__APPLE__)
-struct AudioComponentDescription; // <AudioToolbox/AUComponent.h>
-#else
-struct AudioComponentDescription;  // opaque tag on non-Apple builds
-#endif
+// Matches <AudioToolbox/AUComponent.h> on Apple builds; opaque tag elsewhere.
+struct AudioComponentDescription;
 
 namespace sonicpatch {
 

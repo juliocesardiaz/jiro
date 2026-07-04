@@ -5,6 +5,7 @@
 // applied a per-sample coefficient once per block, freezing the meter).
 //
 #include "Nodes/MeterNode.hpp"
+#include "TestSupport.hpp"
 
 #include <gtest/gtest.h>
 
@@ -30,11 +31,7 @@ AudioFormat format() {
 void feedBlock(MeterNode& meter, float* left, float* right, uint32_t frames) {
     float* chans[2] = {left, right};
     AudioBuffer in(chans, 2, frames);
-    ProcessContext ctx;
-    ctx.inputs     = &in;
-    ctx.numInputs  = 1;
-    ctx.frames     = frames;
-    ctx.sampleRate = kSampleRate;
+    ProcessContext ctx = test::makeContext(&in, nullptr, frames, kSampleRate);
     meter.process(ctx);
 }
 
@@ -119,9 +116,7 @@ TEST(MeterNodeTests, InvalidInputDecaysInsteadOfFreezing) {
 
     // Input goes away entirely (e.g. tap stops delivering): the meter must
     // fall, not hold its last value.
-    ProcessContext ctx;
-    ctx.frames     = kFrames;
-    ctx.sampleRate = kSampleRate;
+    ProcessContext ctx = test::makeContext(nullptr, nullptr, kFrames, kSampleRate);
     const uint32_t blocksPerSecond = static_cast<uint32_t>(kSampleRate / kFrames);
     for (uint32_t i = 0; i < blocksPerSecond; ++i) {
         meter.process(ctx);

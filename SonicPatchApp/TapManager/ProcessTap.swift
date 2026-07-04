@@ -128,38 +128,8 @@ final class ProcessTap {
     /// already names the audio-rendering process; matching every object with
     /// that bundle id also covers apps that spawn several rendering helpers.
     private func resolveProcessObjects(forBundleId bundleId: String) throws -> [AudioObjectID] {
-        var listAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil, &size) == noErr,
-            size > 0 else {
-            throw ProcessTapError.processNotFound
-        }
-        var objects = [AudioObjectID](
-            repeating: AudioObjectID(kAudioObjectUnknown),
-            count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &listAddress, 0, nil,
-            &size, &objects) == noErr else {
-            throw ProcessTapError.processNotFound
-        }
-
-        var bundleAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioProcessPropertyBundleID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-
-        let matches = objects.filter { object in
-            var value = "" as CFString
-            var valueSize = UInt32(MemoryLayout<CFString>.size)
-            let status = withUnsafeMutablePointer(to: &value) {
-                AudioObjectGetPropertyData(object, &bundleAddress, 0, nil, &valueSize, $0)
-            }
-            return status == noErr && (value as String) == bundleId
+        let matches = CoreAudioProperties.processObjectList().filter {
+            CoreAudioProperties.processBundleID($0) == bundleId
         }
 
         // No matching audio process yet — the app isn't audible; defer & retry.
@@ -170,29 +140,11 @@ final class ProcessTap {
     /// UID of the current default output device, used as the aggregate's main
     /// sub-device so pass-through audio reaches the user's speakers/headphones.
     private func defaultOutputDeviceUID() throws -> CFString {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var deviceID = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        var status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
-        guard status == noErr, deviceID != AudioObjectID(kAudioObjectUnknown) else {
+        guard let deviceID = CoreAudioProperties.defaultOutputDeviceID(),
+              let uid = CoreAudioProperties.deviceUID(deviceID) else {
             throw ProcessTapError.outputDeviceUnavailable
         }
-
-        var uidAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var uid = "" as CFString
-        var uidSize = UInt32(MemoryLayout<CFString>.size)
-        status = withUnsafeMutablePointer(to: &uid) {
-            AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, $0)
-        }
-        guard status == noErr else { throw ProcessTapError.outputDeviceUnavailable }
-        return uid
+        return uid as CFString
     }
 
     /// Create the process tap from a CATapDescription covering every matching
@@ -215,31 +167,24 @@ final class ProcessTap {
 
     /// Read the tap's stream format (rate / channel count).
     private func readTapFormat() throws {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyFormat,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var asbd = AudioStreamBasicDescription()
-        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        let status = AudioObjectGetPropertyData(tapObjectID, &address, 0, nil, &size, &asbd)
-        guard status == noErr else { throw ProcessTapError.formatUnavailable }
+        guard let asbd = CoreAudioProperties.read(
+            AudioStreamBasicDescription.self,
+            object: tapObjectID,
+            selector: kAudioTapPropertyFormat,
+            initial: AudioStreamBasicDescription()) else {
+            throw ProcessTapError.formatUnavailable
+        }
         sampleRate   = asbd.mSampleRate
         channelCount = asbd.mChannelsPerFrame
     }
 
     /// Read the tap's UID so it can be referenced from the aggregate's tap list.
     private func readTapUID() throws -> CFString {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain)
-        var uid = "" as CFString
-        var size = UInt32(MemoryLayout<CFString>.size)
-        let status = withUnsafeMutablePointer(to: &uid) {
-            AudioObjectGetPropertyData(tapObjectID, &address, 0, nil, &size, $0)
+        guard let uid = CoreAudioProperties.readString(
+            object: tapObjectID, selector: kAudioTapPropertyUID) else {
+            throw ProcessTapError.formatUnavailable
         }
-        guard status == noErr else { throw ProcessTapError.formatUnavailable }
-        return uid
+        return uid as CFString
     }
 
     /// Create a *private* aggregate device combining the tap and the output

@@ -64,6 +64,20 @@ struct Strip {
     std::shared_ptr<MeterNode>       meter;
     float                            inputTrimDb = 0.0f;
     int                              nextEffectHandle = 0;
+
+    /// Visit the strip's nodes in processing order (source -> effects ->
+    /// volume -> meter), skipping nulls. This is THE definition of the strip
+    /// chain: edge collection, ownership mapping, and preparation all walk it,
+    /// so adding a stage (e.g. the planned input trim) is a one-place change.
+    template <typename Fn>
+    void forEachNode(Fn&& fn) const {
+        if (source) fn(std::static_pointer_cast<Node>(source));
+        for (const auto& slot : effects) {
+            if (slot.node) fn(std::static_pointer_cast<Node>(slot.node));
+        }
+        if (volume) fn(std::static_pointer_cast<Node>(volume));
+        if (meter)  fn(std::static_pointer_cast<Node>(meter));
+    }
 };
 
 } // namespace
@@ -118,28 +132,32 @@ struct AudioEngine::Impl {
     void rebuildGraph() {
         prepareAll();
 
-        // Collect nodes + edges for the topological sort (diagnostic / ordering).
+        // One walk over every strip chain (Strip::forEachNode is the single
+        // definition of the chain) collects, in lockstep: the node list and
+        // intra-strip edges for the topological sort, and the id -> shared_ptr
+        // ownership map the config bindings are built from. Keeping these in
+        // one pass means a new strip stage can't be sorted but not owned, or
+        // owned but never prepared.
         std::vector<NodeID> nodes;
         std::vector<Edge>   edges;
-        auto add = [&](Node* n) { if (n) nodes.push_back(n->id()); };
+        std::map<NodeID, std::shared_ptr<Node>> byId;
 
         for (auto& kv : strips_) {
-            Strip* s = kv.second.get();
-            add(s->source.get());
-            Node* prev = s->source.get();
-            for (auto& slot : s->effects) {
-                add(slot.node.get());
-                if (prev && slot.node) edges.push_back({prev->id(), slot.node->id()});
-                prev = slot.node.get();
-            }
-            add(s->volume.get());
-            if (prev && s->volume) edges.push_back({prev->id(), s->volume->id()});
-            add(s->meter.get());
-            if (s->volume && s->meter) edges.push_back({s->volume->id(), s->meter->id()});
-            if (s->meter) edges.push_back({s->meter->id(), master_->id()});
+            const Strip* s = kv.second.get();
+            std::shared_ptr<Node> prev;
+            s->forEachNode([&](const std::shared_ptr<Node>& n) {
+                nodes.push_back(n->id());
+                byId[n->id()] = n;
+                if (prev) edges.push_back({prev->id(), n->id()});
+                prev = n;
+            });
+            // The chain's tail (meter) feeds the master mixer.
+            if (prev) edges.push_back({prev->id(), master_->id()});
         }
-        add(master_.get());
-        add(sink_.get());
+        nodes.push_back(master_->id());
+        byId[master_->id()] = master_;
+        nodes.push_back(sink_->id());
+        byId[sink_->id()] = sink_;
         edges.push_back({master_->id(), sink_->id()});
 
         const TopoSortResult topo = topologicalSort(nodes, edges);
@@ -149,24 +167,13 @@ struct AudioEngine::Impl {
             return; // keep the previously-published config
         }
 
-        // Build the binding list in sorted order. Buffer assignment to pooled
-        // edges is performed here in a full implementation; see TODO below.
-        auto cfg = std::make_unique<GraphConfig>();
-        cfg->format = format_;
-
-        // Map node id -> shared_ptr for binding lookup. The config takes shared
+        // Build the binding list in sorted order. The config takes shared
         // ownership of every node it binds so that strip/effect removal on the
         // control thread can never free a node out from under the audio thread.
-        std::map<NodeID, std::shared_ptr<Node>> byId;
-        for (auto& kv : strips_) {
-            Strip* s = kv.second.get();
-            if (s->source) byId[s->source->id()] = s->source;
-            for (auto& slot : s->effects) if (slot.node) byId[slot.node->id()] = slot.node;
-            if (s->volume) byId[s->volume->id()] = s->volume;
-            if (s->meter)  byId[s->meter->id()]  = s->meter;
-        }
-        byId[master_->id()] = master_;
-        byId[sink_->id()]   = sink_;
+        // Buffer assignment to pooled edges is performed here in a full
+        // implementation; see TODO below.
+        auto cfg = std::make_unique<GraphConfig>();
+        cfg->format = format_;
 
         for (NodeID nid : topo.order) {
             auto it = byId.find(nid);
@@ -201,11 +208,8 @@ struct AudioEngine::Impl {
         // in the currently-published config). Format changes are only allowed
         // while stopped, so live nodes are never re-prepared here.
         for (auto& kv : strips_) {
-            Strip* s = kv.second.get();
-            if (s->source) s->source->prepareIfNeeded(format_);
-            for (auto& slot : s->effects) if (slot.node) slot.node->prepareIfNeeded(format_);
-            if (s->volume) s->volume->prepareIfNeeded(format_);
-            if (s->meter)  s->meter->prepareIfNeeded(format_);
+            kv.second->forEachNode(
+                [&](const std::shared_ptr<Node>& n) { n->prepareIfNeeded(format_); });
         }
         master_->prepareIfNeeded(format_);
         sink_->prepareIfNeeded(format_);

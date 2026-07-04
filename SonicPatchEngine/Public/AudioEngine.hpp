@@ -17,13 +17,10 @@
 
 // Forward declaration for Phase-4 AudioUnit hosting. We deliberately do NOT
 // include <AudioToolbox/AudioToolbox.h> here so that this header stays portable
-// and Swift-interop-friendly. On Apple builds the real type is visible; on other
-// platforms we provide a tag so the signature still compiles.
-#if defined(__APPLE__)
-struct AudioComponentDescription; // from <AudioToolbox/AUComponent.h>
-#else
-struct AudioComponentDescription;  // opaque tag on non-Apple builds (Phase 4)
-#endif
+// and Swift-interop-friendly. On Apple builds this matches the real type from
+// <AudioToolbox/AUComponent.h>; elsewhere it is an opaque tag so signatures
+// still compile.
+struct AudioComponentDescription;
 
 namespace sonicpatch {
 

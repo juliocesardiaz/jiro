@@ -2,15 +2,11 @@
 // GainUtility.cpp
 //
 #include "GainUtility.hpp"
+#include "DspMath.hpp"
 
 #include <cmath>
 
 namespace sonicpatch {
-
-namespace {
-constexpr float kPi = 3.14159265358979323846f;
-inline float dbToLin(float db) { return std::pow(10.0f, db * 0.05f); }
-} // namespace
 
 void GainUtility::prepare(const AudioFormat&) {}
 void GainUtility::reset() {}
@@ -27,7 +23,7 @@ void GainUtility::setParameter(uint32_t id, float value) {
 
 void GainUtility::process(float** io, int channels, int frames) {
     // [RT]
-    const float gain = dbToLin(gainDb_) * (invert_ ? -1.0f : 1.0f);
+    const float gain = dsp::dbToLinear(gainDb_) * (invert_ ? -1.0f : 1.0f);
 
     // Optional mono sum (averaged to preserve level), applied first.
     if (monoSum_ && channels > 1) {
@@ -41,9 +37,10 @@ void GainUtility::process(float** io, int channels, int frames) {
 
     // Constant-power pan for stereo: theta in [0, pi/2].
     if (channels == 2) {
-        const float theta = (pan_ * 0.5f + 0.5f) * (kPi * 0.5f);
-        const float lGain = std::cos(theta) * gain;
-        const float rGain = std::sin(theta) * gain;
+        float panL = 1.0f, panR = 1.0f;
+        dsp::constantPowerPanGains(pan_, panL, panR);
+        const float lGain = panL * gain;
+        const float rGain = panR * gain;
         for (int n = 0; n < frames; ++n) {
             io[0][n] *= lGain;
             io[1][n] *= rGain;

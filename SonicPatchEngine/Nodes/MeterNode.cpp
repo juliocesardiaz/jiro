@@ -2,6 +2,7 @@
 // MeterNode.cpp
 //
 #include "MeterNode.hpp"
+#include "../DSP/DspMath.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -15,11 +16,11 @@ void MeterNode::prepare(const AudioFormat& fmt) {
     // coefficient; process() raises it to the block length so ballistics are
     // independent of callback size.
     const double peakReleaseSec = 0.3;
-    peakDecay_ = static_cast<float>(std::exp(-1.0 / (peakReleaseSec * sampleRate_)));
+    peakDecay_ = dsp::onePoleCoeff(peakReleaseSec, sampleRate_);
     // RMS integration window ~ 300 ms (one-pole on the squared signal, stepped
     // once per FRAME on the mean square across channels).
     const double rmsWindowSec = 0.3;
-    rmsCoeff_ = static_cast<float>(std::exp(-1.0 / (rmsWindowSec * sampleRate_)));
+    rmsCoeff_ = dsp::onePoleCoeff(rmsWindowSec, sampleRate_);
     reset();
 }
 
