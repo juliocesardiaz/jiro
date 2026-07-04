@@ -32,7 +32,7 @@ setting, and the GoogleTest/CMake path for engine unit tests.
 | `SonicPatchEngine/`  | C++17 real-time mixing/effects engine (pImpl `AudioEngine`)  |
 | `SonicPatchDriver/`  | HAL virtual-device `.driver` (libASPL), inter-app routing    |
 | `SonicPatchInstaller/`| Privileged helper that installs the HAL driver (Phase 5)    |
-| `SonicPatchTests/`   | XCTest (Swift) + GoogleTest/CMake (engine)                   |
+| `SonicPatchTests/`   | GoogleTest/CMake engine tests (Swift XCTest target: planned) |
 | `Vendor/`            | Third-party dependencies (e.g. libASPL)                      |
 | `Docs/`              | Architecture, roadmap, build docs                            |
 
@@ -45,7 +45,10 @@ setting, and the GoogleTest/CMake path for engine unit tests.
 - PR titles follow [Conventional Commits](https://www.conventionalcommits.org/),
   e.g. `feat(tap): create per-process taps on audible transition`.
 - Reference the roadmap phase in the PR description where relevant.
-- All PRs require green build + tests on macOS and at least one review.
+- Run the C++ engine tests before pushing (`cmake -S SonicPatchTests -B build
+  && cmake --build build && ctest --test-dir build`); they run on any platform.
+  There is no macOS CI yet — building the app targets on a Mac before merging
+  is strongly encouraged. PRs require at least one review.
 
 ## Code style
 
@@ -57,7 +60,12 @@ setting, and the GoogleTest/CMake path for engine unit tests.
   (e.g. `ObservableObject` state, Core Audio resource owners).
 - UI is SwiftUI. Keep views small and composable; push logic into models and
   services. State flows through `@Published` properties on `ObservableObject`s.
-- Mark phase-gated stubs with `// TODO(Phase N):` so they're easy to grep.
+- Mark phase-gated stubs with `// TODO(Phase N):` so they're easy to grep —
+  and REMOVE the TODO in the same PR that completes it; stale TODOs poison
+  that grep.
+- UI placeholders for future phases must be visibly inert: caption them
+  (`Text("Phase N — preview")`) and `.disabled(true)` any control that doesn't
+  do what it appears to do. Never ship an enabled control bound to mock data.
 - Document public types and any non-obvious Core Audio call sites with `///`.
 
 ### C++ (engine — C++17)

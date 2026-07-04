@@ -55,10 +55,9 @@ set(ENGINE_PORTABLE_SOURCES
     ${ENGINE_ROOT}/Nodes/TapSourceNode.cpp
     ${ENGINE_ROOT}/Nodes/DeviceSinkNode.cpp
 )
-# NOTE: deliberately NOT compiled here (require Apple frameworks):
-#   AU/AudioUnitHost.mm, Public/AudioEngine.cpp (pulls the whole tree but is
-#   portable; included below), Transport/SharedMemory.cpp (POSIX-only, added
-#   conditionally). AudioEngine.cpp is portable C++ and is safe to include.
+# Excluded: AU/AudioUnitHost.mm (requires Apple frameworks).
+# Added conditionally below: Transport/SharedMemory.cpp (POSIX-only) and
+# Public/AudioEngine.cpp (portable C++, safe everywhere).
 if(UNIX)
     list(APPEND ENGINE_PORTABLE_SOURCES ${ENGINE_ROOT}/Transport/SharedMemory.cpp)
 endif()

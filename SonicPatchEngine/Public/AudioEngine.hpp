@@ -70,6 +70,11 @@ public:
     void setVolume(StripID strip, float db);
     void setPan(StripID strip, float pan);   ///< -1 (L) .. 0 (C) .. +1 (R)
     void setMute(StripID strip, bool muted);
+
+    /// STUB (Phase 3): records the trim value but does not yet apply it — the
+    /// strip has no input-trim stage. Will be wired to a head-of-rack gain
+    /// when the pre/post-FX strip layout lands. Do not surface a trim control
+    /// in the UI until then.
     void setInputTrim(StripID strip, float db);
 
     /// Lock-free metering read. Returns {0,0} for unknown strips.

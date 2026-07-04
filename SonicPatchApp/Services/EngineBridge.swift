@@ -11,10 +11,11 @@
 //  (SonicPatchEngine/Public/AudioEngine.hpp) is dependency-free PODs so it
 //  imports cleanly into Swift.
 //
-//  NOTE: The C++ engine is not built in this (Linux) environment, so the calls
-//  into `sonicpatch.AudioEngine` are shown as documented stubs / commented call
-//  sites. On an Apple build with the framework linked, uncomment the interop
-//  calls and remove the local fallbacks.
+//  All engine calls below are LIVE code, conditionally compiled: on an Apple
+//  build with the SonicPatchEngine framework linked they call straight into
+//  the C++ facade; on toolchains without the framework (e.g. Linux CI, which
+//  only parses these sources) the `#if canImport(SonicPatchEngine)` guards
+//  fall back to inert stubs. There is nothing to uncomment.
 //
 
 import Foundation

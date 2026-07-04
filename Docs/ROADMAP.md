@@ -46,9 +46,13 @@ app's audio is heard through SonicPatch with a moving meter.
 **Deliverables:**
 - Channel-strip `Volume` node with smoothed dB gain, mute, constant-power pan.
 - `MenuBarView` wired to live sources: per-app volume slider, mute, peak meter.
-- `AppMonitor` driving the audible-app list from `NSWorkspace` +
-  `kAudioHardwarePropertyProcessIsAudible`.
-- Per-source output device selection.
+- ~~`AppMonitor` driving the audible-app list~~ — ✅ shipped early (Phase 1):
+  Core Audio process-object list + `kAudioProcessPropertyIsRunningOutput`
+  listeners; see `Services/AppMonitor.swift`.
+- Route tapped audio through the engine graph (buffer/edge wiring in
+  `rebuildGraph`, IOProc → `TapSource`/`DeviceSink`) so volume/mute/pan are
+  audible. Wire the negotiated tap format into `EngineBridge.setAudioFormat`.
+- Per-source output device selection (enable the currently-disabled picker).
 
 ## Phase 3 — Built-in DSP
 

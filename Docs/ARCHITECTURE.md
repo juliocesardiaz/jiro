@@ -28,7 +28,7 @@ routing (Phase 5).
 | ----- | ---- | ---------- | -------------- |
 | 1 | **Capture** | Core Audio Process Tap API | Per-process taps + private aggregate devices with IOProc callbacks deliver each app's audio into the engine. |
 | 2 | **Routing** | HAL plugin (user-space virtual device) | An optional `.driver` bundle (libASPL) exposes virtual devices/buses for inter-app routing (send one app's output into another app's input). Phase 5. |
-| 3 | **Engine** | C++17 real-time mixing/effects engine | A lock-free audio graph of channel strips: input trim → pre-FX → volume/pan → post-FX → meter, summed into device sinks. Hosts built-in DSP and AudioUnits. |
+| 3 | **Engine** | C++17 real-time mixing/effects engine | A lock-free audio graph of channel strips: source → effect rack → volume/pan → meter, summed into device sinks. Hosts built-in DSP and (Phase 4) AudioUnits. |
 | 4 | **App** | SwiftUI menu-bar app | UI, app monitoring, permission flow, session/preset management, and the `EngineBridge` C++ interop seam. |
 
 ```
@@ -54,9 +54,12 @@ routing (Phase 5).
 
 ### 3.1 Per-app volume control
 
-1. **Discover** — `AppMonitor` watches `NSWorkspace` launch/quit notifications
-   and the Core Audio HAL property `kAudioHardwarePropertyProcessIsAudible` to
-   maintain the list of audio-producing apps.
+1. **Discover** — `AppMonitor` enumerates Core Audio's process objects
+   (`kAudioHardwarePropertyProcessObjectList`) and publishes only those whose
+   `kAudioProcessPropertyIsRunningOutput` is true, with HAL property listeners
+   (process list + per-process) triggering rescans. `NSWorkspace` terminate
+   notifications drop entries promptly on quit; launch alone does not make an
+   app audible.
 2. **Tap** — when an app becomes *audible*, `TapManager` asks `ProcessTap` to
    build a `CATapDescription` for that process, create a process tap
    (`AudioHardwareCreateProcessTap`), wrap it in a *private* aggregate device,
@@ -113,15 +116,32 @@ be **wait-free and allocation-free**. On the audio thread you must NOT:
 
 Mechanisms:
 
-- **Parameter delivery:** UI builds a new immutable parameter/graph snapshot and
-  publishes it with an atomic pointer swap; the audio thread reads the current
-  snapshot at the top of each callback. Old snapshots are reclaimed off the audio
-  thread.
+- **Topology delivery:** the control thread builds a new immutable `GraphConfig`
+  and publishes it with an atomic pointer swap; the audio thread acquire-loads
+  the current config at the top of each callback. Reclamation is **epoch-based**:
+  `process()` advances a render epoch, and a retired config (which co-owns its
+  nodes via `GraphConfig::ownedNodes`) is freed only once the epoch has advanced
+  ≥ 2 past its retirement stamp — proof the audio thread has moved on. When no
+  audio thread runs, `drain()` reclaims retired configs (the engine calls it on
+  `stop()`). See `Core/AudioGraph.hpp` for the full protocol.
+- **Parameter delivery:** individual parameters do NOT go through the config
+  swap. Volume/pan/mute and mixer gains use per-node atomics read on the audio
+  thread; DSP effect parameters are currently plain fields whose torn reads are
+  benign per-field (biquad coefficient sets are an acknowledged TODO — see
+  `ParametricEQ.cpp`). A lock-free command queue is planned for Phase 2+.
 - **Metering:** `LevelSnapshot` is written with `std::atomic<float>` (relaxed)
-  and read by the UI.
-- **Buffer management:** all buffers come from a pre-allocated `BufferPool`
-  (see `SonicPatchEngine/Core/`). No allocation occurs after `start()`.
-- **Smoothing:** volume/pan/trim are smoothed per-sample to avoid zipper noise.
+  and read by the UI. Strip lookup for `getLevel()` goes through an immutable
+  strip→meter snapshot map swapped with `atomic_store`, so 60 fps polling never
+  takes the control mutex.
+- **Buffer management (Phase 2):** graph-edge buffers will come from the
+  pre-allocated `BufferPool` (see `SonicPatchEngine/Core/`); today nodes use
+  private staging buffers allocated in `prepare()` and the pool is not yet wired
+  to edges. Invariant either way: no allocation after `start()` — which is why
+  **format changes are only allowed while stopped** and live nodes are never
+  re-prepared (`Node::prepareIfNeeded`).
+- **Smoothing:** volume/pan are smoothed per-sample to avoid zipper noise; the
+  mixer de-zippers gain changes with a fixed-slope 64-sample ramp that persists
+  across block boundaries.
 
 ---
 
@@ -132,9 +152,16 @@ publish (see `Core/TopologicalSort`). A user-facing **channel strip** maps to a
 chain of internal nodes:
 
 ```
-TapSource → InputTrim(Volume) → [pre-FX slot 0..3] → Volume/Pan →
-            [post-FX slot 0..3] → Meter → Mixer → DeviceSink
+TapSource → [effect rack: ordered EffectNode list] → Volume/Pan → Meter
+          → Mixer → DeviceSink
 ```
+
+> Design intent for later phases: a dedicated input-trim stage and a pre/post-FX
+> split around the fader (as in a console strip). Neither exists yet — the
+> engine currently has one flat effect rack per strip, and
+> `AudioEngine::setInputTrim` records the value without applying it (see the
+> stub note in `Public/AudioEngine.hpp`). The UI must not present pre/post slots
+> until the engine grows them.
 
 | NodeKind | Purpose |
 | -------- | ------- |
@@ -188,12 +215,12 @@ First-party, real-time-safe effects (no AU hosting required). Mirrors
 
 | Effect | Notes |
 | ------ | ----- |
-| Parametric EQ | Multi-band biquad EQ. |
-| Compressor | Feed-forward dynamics with attack/release. |
-| Limiter | Look-ahead brickwall limiter. |
-| Noise Gate | Threshold gate with hysteresis. |
-| High/Low-pass Filter | Tunable HPF/LPF. |
-| Gain Utility | Simple trim/polarity utility. |
+| Parametric EQ | Multi-band biquad EQ (RBJ cookbook). |
+| Compressor | Feed-forward dynamics with attack/release (soft knee: Phase 3). |
+| Limiter | Brickwall limiter (look-ahead delay line: Phase 3; currently instant-attack). |
+| Noise Gate | Threshold gate (hysteresis + range: Phase 3; currently full mute when closed). |
+| High/Low-pass Filter | Tunable HPF/LPF (cascaded biquads). |
+| Gain Utility | Gain/pan/polarity/mono-sum utility. |
 
 Each is inserted via `AudioEngine.insertBuiltinEffect(strip, slotIndex, type)`
 and parameterized with `setEffectParameter(strip, slot, paramId, value)`.
@@ -213,8 +240,10 @@ Third-party **AudioUnit** plugins are hosted in the same slots (Phase 4).
   ~/Library/Application Support/SonicPatch/Presets/<name>.json
   ```
 
-- The UI loads the last session at launch and writes the current session on
-  change/quit. See `SonicPatchApp/Models/Session.swift`.
+- **Status:** the `Session` model and JSON persistence exist in
+  `SonicPatchApp/Models/Session.swift` but are **not yet wired to the app** —
+  loading the last session at launch and auto-saving on change/quit land in
+  Phase 6.
 
 ---
 

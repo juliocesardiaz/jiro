@@ -5,7 +5,9 @@ virtual-device driver. This is the *only* privileged component in SonicPatch; th
 core audio-capture path (Phases 1–4) runs entirely unprivileged.
 
 > **Phase:** 5 (HAL plugin & inter-app routing). This directory is a documented
-> skeleton today.
+> skeleton today, and it is deliberately **not part of any Xcode target** — the
+> code here is never compiled until Phase 5 adds a `SonicPatchInstaller` target
+> to `project.yml`. Expect it to need type-check fixes when that happens.
 
 ## Why a separate helper?
 
@@ -15,7 +17,7 @@ best practice is to keep that work in a tiny, auditable, one-shot helper that th
 main (sandboxed, unprivileged) app talks to over XPC, rather than elevating the
 whole app.
 
-## What it does
+## What it will do (Phase 5)
 
 1. Acquires an `AuthorizationRef` with admin rights (the system prompts the user
    once).
@@ -25,7 +27,8 @@ whole app.
 3. Restarts Core Audio so the HAL re-scans plug-ins:
    `launchctl kickstart -k system/com.apple.audio.coreaudiod`
    (equivalently `killall coreaudiod`).
-4. Verifies the virtual device enumerates and reports the result back to the app.
+4. Verifies the virtual device enumerates and reports the result back to the
+   app. *(This step exists only here, not yet in the skeleton code.)*
 
 Uninstall reverses step 2 (removes the bundle) and repeats steps 1, 3.
 

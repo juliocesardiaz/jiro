@@ -31,9 +31,11 @@ final class TapManager {
     /// Max activation attempts before giving up until the next audible signal.
     private let maxAttempts = 5
 
-    /// Low-frequency timer that re-attempts deferred taps. Taps fail until the
-    /// target app is actually producing audio, so we poll a few times rather than
-    /// only reacting to `AppMonitor`'s (Phase 2) audible-process listener.
+    /// Low-frequency fallback timer that re-attempts deferred taps. The primary
+    /// retry signal is `AppState.reconcileSources` calling `retryPendingTaps()`
+    /// whenever AppMonitor's audible set changes; this timer stays as
+    /// belt-and-braces for failures the HAL listeners can't see (e.g. a tap
+    /// that failed for a transient reason while the audible set was stable).
     private var retryTimer: Timer?
 
     init(engine: EngineBridge) {
@@ -95,9 +97,9 @@ final class TapManager {
             taps[bundleId] = tap
             pending[bundleId] = nil
         } catch ProcessTapError.processNotFound {
-            // Not yet audible — defer and wait for the audible-process signal.
-            // TODO(Phase 1): rely on AppMonitor's audible listener to call
-            // retryPendingTaps() rather than spinning here.
+            // Not yet audible — defer. AppMonitor's audible listener (via
+            // reconcileSources → retryPendingTaps) and the fallback timer
+            // both re-attempt this entry.
             queuePending(bundleId: bundleId, stripID: stripID,
                          attempts: priorAttempts + 1)
         } catch {

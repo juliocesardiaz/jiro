@@ -8,6 +8,11 @@
 //  Persisted as JSON to:
 //    ~/Library/Application Support/SonicPatch/Presets/<name>.json
 //
+//  STATUS: model + persistence are implemented but NOT yet wired to the app —
+//  nothing loads or saves sessions until Phase 6 (auto-save / named presets).
+//  This file is the canonical encoding of the persistence schema; treat field
+//  renames as a persisted-format change.
+//
 
 import Foundation
 

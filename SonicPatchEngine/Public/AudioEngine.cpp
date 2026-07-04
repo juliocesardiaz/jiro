@@ -301,8 +301,8 @@ void AudioEngine::setInputTrim(StripID strip, float db) {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     if (Strip* s = impl_->find(strip)) {
         s->inputTrimDb = db;
-        // TODO(Phase 2): apply the trim as a pre-effects gain (e.g. a dedicated
-        // GainUtility at the head of the rack). For now it is recorded only.
+        // STUB: recorded only — see the header note. TODO(Phase 3): apply as a
+        // head-of-rack gain stage when the pre/post-FX strip layout lands.
     }
 }
 

@@ -95,6 +95,10 @@ targets:
         CLANG_CXX_LIBRARY: "libc++"
 
   # ---------------------------------------------------------------------------
+  # NOTE on SonicPatchInstaller/: deliberately NOT a target yet. The privileged
+  # helper is a Phase-5 documented skeleton; it gets a target (and its first
+  # compile) when the HAL driver install flow lands.
+  # ---------------------------------------------------------------------------
   # NOTE on tests: the engine's tests are GoogleTest C++ driven by CMake
   # (SonicPatchTests/CMakeLists.txt — buildable on any platform; see
   # Docs/BUILD.md). They are deliberately NOT an Xcode target: an XCTest bundle

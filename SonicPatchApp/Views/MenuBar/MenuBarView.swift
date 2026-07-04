@@ -159,23 +159,24 @@ private struct SourceRow: View {
     }
 }
 
-/// Per-source output-device picker. Uses mock device entries until Core Audio
-/// device enumeration lands.
+/// Per-source output-device picker. DISABLED until Phase 2: audio currently
+/// always follows the system default output, and an enabled picker bound to
+/// mock devices would silently discard the user's choice.
 private struct OutputDevicePicker: View {
     @EnvironmentObject private var appState: AppState
     let source: AudioSource
 
-    // TODO(Phase 2): populate from Core Audio output-device enumeration.
-    private let mockDevices = ["System Default", "MacBook Pro Speakers",
-                               "External Headphones"]
-
+    // TODO(Phase 2): populate from Core Audio output-device enumeration and
+    // re-enable; route the selection through AppState -> ProcessTap.
     var body: some View {
-        Picker("", selection: .constant(source.outputDeviceUID ?? "System Default")) {
-            ForEach(mockDevices, id: \.self) { Text($0).tag($0) }
+        Picker("", selection: .constant("System Default")) {
+            Text("System Default").tag("System Default")
         }
         .labelsHidden()
         .frame(maxWidth: 130)
         .font(.caption)
+        .disabled(true)
+        .help("Per-source output selection arrives in Phase 2; audio follows the system default output.")
     }
 }
 

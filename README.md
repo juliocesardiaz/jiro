@@ -26,12 +26,14 @@ routing in Phase 5).
 - **Inter-app routing** — route any source to any output device or virtual bus;
   send one app's audio into another app's input (Phase 5, via an optional
   user-space HAL virtual device built on [libASPL](https://github.com/gavv/libASPL)).
-- **Per-source channel strip** — input trim, four pre-FX insert slots, volume &
-  pan, four post-FX insert slots, and a peak/RMS meter for each source.
+- **Per-source channel strip** — volume & pan with a peak/RMS meter per
+  source, plus an ordered effect rack (Phase 3; input trim and a pre/post-FX
+  split around the fader are planned).
 - **AU hosting** — load and host Audio Unit (v2/v3) plugins in any insert slot
   (Phase 4).
-- **Built-in DSP** — bundled real-time-safe effects (EQ, compressor, limiter,
-  gain, delay) for when you don't want a third-party plugin.
+- **Built-in DSP** — bundled real-time-safe effects (parametric EQ,
+  compressor, limiter, noise gate, high/low-pass filter, gain utility) for when
+  you don't want a third-party plugin.
 
 ## Requirements
 
@@ -97,14 +99,15 @@ open SonicPatch.xcodeproj   # or the generated workspace
 ├── SonicPatchEngine/           # C++17 real-time engine (separate ownership)
 ├── SonicPatchDriver/           # HAL virtual-device .driver (separate ownership)
 ├── SonicPatchInstaller/        # privileged helper for HAL install (Phase 5)
-├── SonicPatchTests/            # XCTest + GoogleTest/CMake (separate ownership)
+├── SonicPatchTests/            # GoogleTest/CMake engine tests (no Swift tests yet)
 └── Vendor/                     # third-party deps, e.g. libASPL
 ```
 
 ## Roadmap
 
-See [Docs/ROADMAP.md](Docs/ROADMAP.md) for the six-phase plan. We are currently
-in **Phase 1 (Tap proof-of-concept)**.
+See [Docs/ROADMAP.md](Docs/ROADMAP.md) for the six-phase plan and the current
+status. We are in **Phase 1 (Tap proof-of-concept)** — code complete, pending
+on-device verification.
 
 ## Contributing
 
