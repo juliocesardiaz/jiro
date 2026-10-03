@@ -1,0 +1,47 @@
+# ---- Xcode ----
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# ---- XcodeGen generated artifacts (project.yml is the source of truth) ----
+SonicPatch.xcodeproj/
+*.xcworkspace/
+# (do NOT ignore project.yml)
+
+# ---- Swift / SwiftPM ----
+.build/
+.swiftpm/
+Package.resolved
+
+# ---- C++ build artifacts ----
+*.o
+*.a
+*.lo
+*.slo
+*.la
+*.dylib
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# ---- misc ----
+*.log
+*.swp
+*~

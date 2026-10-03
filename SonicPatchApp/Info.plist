@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.sonicpatch.app</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>SonicPatch</string>
+	<key>CFBundleDisplayName</key>
+	<string>SonicPatch</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+
+	<!-- Menu-bar agent: no Dock icon, no main menu bar. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Minimum OS: Process Tap API requires macOS 14.4 Sonoma. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>14.4</string>
+
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- SwiftUI app: no NSPrincipalClass / NSMainNibFile is required; the
+	     @main App provides the application object and scene graph. -->
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<!-- TCC usage description for the audio-capture (Process Tap) permission. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>SonicPatch needs to capture audio from other applications to route and process it.</string>
+</dict>
+</plist>

@@ -1,0 +1,115 @@
+# SonicPatch — XcodeGen project specification.
+#
+# This file is the SOURCE OF TRUTH for the Xcode project. The .xcodeproj is NOT
+# checked in; generate it with:
+#
+#     brew install xcodegen
+#     xcodegen generate     # produces SonicPatch.xcodeproj
+#     open SonicPatch.xcodeproj
+#
+# See Docs/BUILD.md for the full build guide.
+
+name: SonicPatch
+
+options:
+  bundleIdPrefix: com.sonicpatch
+  deploymentTarget:
+    macOS: "14.4"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    # Apple Silicon only.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: true
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.4"
+    CODE_SIGN_STYLE: Automatic
+    # Zero-entitlements design for the core capture path; the only signed,
+    # privileged piece is the optional installer helper (Phase 5).
+    ENABLE_HARDENED_RUNTIME: true
+
+targets:
+  # ---------------------------------------------------------------------------
+  # SwiftUI menu-bar app
+  # ---------------------------------------------------------------------------
+  SonicPatch:
+    type: application
+    platform: macOS
+    sources:
+      - SonicPatchApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.app
+        PRODUCT_NAME: SonicPatch
+        INFOPLIST_FILE: SonicPatchApp/Info.plist
+        # (LSUIElement — menu-bar agent, no Dock icon — is an Info.plist key,
+        # set in SonicPatchApp/Info.plist, not a build setting.)
+        # Enable C++ / Objective-C++ interop so Swift can call into the
+        # sonicpatch::AudioEngine C++ facade directly (Swift 5.9+).
+        SWIFT_OBJC_INTEROP_MODE: objcxx
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+    dependencies:
+      - target: SonicPatchEngine
+
+  # ---------------------------------------------------------------------------
+  # C++17 real-time mixing/effects engine (framework)
+  # NOTE: sources owned by another contributor; spec'd here for the dependency.
+  # ---------------------------------------------------------------------------
+  SonicPatchEngine:
+    type: framework
+    platform: macOS
+    # Header visibility is per-source in XcodeGen: only Public/ ships as the
+    # framework's public headers (the Swift-interop surface); everything else
+    # stays project-internal.
+    sources:
+      - path: SonicPatchEngine
+        headerVisibility: project
+        excludes:
+          - "Public/**"
+      - path: SonicPatchEngine/Public
+        headerVisibility: public
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.engine
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+        DEFINES_MODULE: true
+
+  # ---------------------------------------------------------------------------
+  # HAL virtual-device driver (.driver bundle), libASPL-based (Phase 5)
+  # NOTE: sources owned by another contributor.
+  # ---------------------------------------------------------------------------
+  SonicPatchDriver:
+    type: bundle
+    platform: macOS
+    sources:
+      - SonicPatchDriver
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sonicpatch.driver
+        WRAPPER_EXTENSION: driver
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+
+  # ---------------------------------------------------------------------------
+  # NOTE on SonicPatchInstaller/: deliberately NOT a target yet. The privileged
+  # helper is a Phase-5 documented skeleton; it gets a target (and its first
+  # compile) when the HAL driver install flow lands.
+  # ---------------------------------------------------------------------------
+  # NOTE on tests: the engine's tests are GoogleTest C++ driven by CMake
+  # (SonicPatchTests/CMakeLists.txt — buildable on any platform; see
+  # Docs/BUILD.md). They are deliberately NOT an Xcode target: an XCTest bundle
+  # pointing at GoogleTest sources cannot build. A Swift XCTest target will be
+  # added here alongside the first Swift unit tests.
+  # ---------------------------------------------------------------------------
+
+schemes:
+  SonicPatch:
+    build:
+      targets:
+        SonicPatch: all
+    run:
+      config: Debug
