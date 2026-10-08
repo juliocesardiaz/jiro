@@ -1,0 +1,31 @@
+name: Native demo
+on:
+  push:
+    branches: [feat/native-demo]
+  pull_request:
+    paths: ['Demo/**', 'scripts/*demo.sh', '.github/workflows/native-demo.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-demo-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audio regression tests
+        run: bash scripts/test-demo.sh
+      - name: Address and undefined-behavior sanitizers
+        run: SANITIZE=1 bash scripts/test-demo.sh
+      - name: Build, sign locally, and launch smoke test
+        run: bash scripts/build-demo.sh --no-open
+      - name: Package demo
+        run: ditto -c -k --sequesterRsrc --keepParent 'build/SonicPatch Demo.app' build/SonicPatch-Demo-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SonicPatch-Demo-arm64
+          path: build/SonicPatch-Demo-arm64.zip
+          retention-days: 14

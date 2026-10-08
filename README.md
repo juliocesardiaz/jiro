@@ -1,5 +1,30 @@
 # SonicPatch
 
+## Try the initial native demo
+
+The `Demo/` target is a small native menu-bar mixer with live per-app volume,
+mute, stereo balance, post-fader meters, output selection, and saved settings.
+It uses a dedicated C++ processor for each tap; the larger graph/effects engine
+below remains experimental. See **[Demo setup and playback checks](Docs/DEMO.md)**.
+
+On an Apple Silicon Mac with Apple's developer tools installed:
+
+```sh
+bash scripts/build-demo.sh
+```
+
+The script builds, locally signs, and opens `build/SonicPatch Demo.app` without
+Homebrew, XcodeGen, or a driver. Click **Start mixing** and allow system audio
+capture. Use **Restore audio** to release every captured app.
+
+**Verification:** portable audio regression tests are available through
+`bash scripts/test-demo.sh`; the `Native demo` workflow builds on macOS.
+A successful build does not replace the on-device playback checks in the guide.
+
+---
+
+## Full-engine architecture and roadmap
+
 > A system-wide audio routing & processing engine for Apple Silicon Macs — per-app volume, inter-app routing, and a per-source channel strip with AU hosting and built-in DSP.
 
 <!-- Badges placeholder -->
