@@ -3,7 +3,7 @@ on:
   push:
     branches: [feat/native-demo]
   pull_request:
-    paths: ['Demo/**', 'scripts/*demo.sh', '.github/workflows/native-demo.yml']
+    paths: ['Demo/**', 'scripts/*demo*.sh', '.github/workflows/native-demo.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,10 +22,15 @@ jobs:
         run: SANITIZE=1 bash scripts/test-demo.sh
       - name: Build, sign locally, and launch smoke test
         run: bash scripts/build-demo.sh --no-open
+      - name: Native interface startup
+        run: bash scripts/check-demo-ui.sh
       - name: Package demo
         run: ditto -c -k --sequesterRsrc --keepParent 'build/SonicPatch Demo.app' build/SonicPatch-Demo-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: SonicPatch-Demo-arm64
-          path: build/SonicPatch-Demo-arm64.zip
+          path: |
+            build/SonicPatch-Demo-arm64.zip
+            build/SonicPatch-Demo.png
+            build/demo-startup.log
           retention-days: 14
